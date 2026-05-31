@@ -1,6 +1,8 @@
 defmodule Todex.Todos do
   import Ecto.Query
 
+  alias Ecto.Multi
+  alias Todex.Goals
   alias Todex.Repo
   alias Todex.Todos.List
   alias Todex.Todos.Task
@@ -108,15 +110,29 @@ defmodule Todex.Todos do
       %Task{}
       |> Task.changeset(attrs)
       |> Repo.insert()
+      |> case do
+        {:ok, task} -> {:ok, task, []}
+        {:error, changeset} -> {:error, changeset}
+      end
     end
   end
 
   def update_task(user, id, attrs) do
     with %Task{} = task <- get_task(user, id),
          {:ok, attrs} <- validate_list_owner(user, attrs) do
-      task
-      |> Task.changeset(attrs |> known_task_attrs() |> normalize_task_attrs())
-      |> Repo.update()
+      Multi.new()
+      |> Multi.update(
+        :task,
+        Task.changeset(task, attrs |> known_task_attrs() |> normalize_task_attrs())
+      )
+      |> Multi.run(:affected_goal_ids, fn repo, _changes ->
+        {:ok, Goals.linked_goal_ids_for_task(repo, user, task.id)}
+      end)
+      |> Multi.run(:affected_goals, fn repo, %{affected_goal_ids: affected_goal_ids} ->
+        Goals.recompute_progress(repo, user, affected_goal_ids)
+      end)
+      |> Repo.transaction()
+      |> task_write_result()
     else
       nil -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
@@ -125,8 +141,20 @@ defmodule Todex.Todos do
 
   def delete_task(user, id) do
     case get_task(user, id) do
-      nil -> {:error, :not_found}
-      task -> Repo.delete(task)
+      nil ->
+        {:error, :not_found}
+
+      task ->
+        Multi.new()
+        |> Multi.run(:affected_goal_ids, fn repo, _changes ->
+          {:ok, Goals.linked_goal_ids_for_task(repo, user, task.id)}
+        end)
+        |> Multi.delete(:task, task)
+        |> Multi.run(:affected_goals, fn repo, %{affected_goal_ids: affected_goal_ids} ->
+          Goals.recompute_progress(repo, user, affected_goal_ids)
+        end)
+        |> Repo.transaction()
+        |> task_write_result()
     end
   end
 
@@ -155,6 +183,12 @@ defmodule Todex.Todos do
     |> where([task], task.user_id == ^user.id and task.list_id == ^list_id)
     |> Repo.exists?()
   end
+
+  defp task_write_result({:ok, %{task: task, affected_goals: affected_goals}}) do
+    {:ok, task, affected_goals}
+  end
+
+  defp task_write_result({:error, _operation, reason, _changes}), do: {:error, reason}
 
   defp validate_list_owner(user, attrs) do
     case param(attrs, :list_id) do

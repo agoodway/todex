@@ -1,4 +1,5 @@
 defmodule TodexWeb.Realtime.CommandHandler do
+  alias Todex.Goals
   alias Todex.Notes
   alias Todex.Todos
   alias TodexWeb.Errors
@@ -68,6 +69,36 @@ defmodule TodexWeb.Realtime.CommandHandler do
     |> result(id, :task, "task:updated")
   end
 
+  defp dispatch(user, id, "goal:create", payload) do
+    user
+    |> Goals.create_goal(payload)
+    |> result(id, :goal, "goal:created")
+  end
+
+  defp dispatch(user, id, "goal:update", payload) do
+    user
+    |> Goals.update_goal(payload_id(payload), payload)
+    |> result(id, :goal, "goal:updated")
+  end
+
+  defp dispatch(user, id, "goal:delete", payload) do
+    user
+    |> Goals.delete_goal(payload_id(payload))
+    |> result(id, :goal, "goal:deleted")
+  end
+
+  defp dispatch(user, id, "goal:link_task", payload) do
+    user
+    |> Goals.link_task(payload_id(payload), task_id(payload))
+    |> result(id, :goal, "goal:updated")
+  end
+
+  defp dispatch(user, id, "goal:unlink_task", payload) do
+    user
+    |> Goals.unlink_task(payload_id(payload), task_id(payload))
+    |> result(id, :goal, "goal:updated")
+  end
+
   defp dispatch(user, id, "note_folder:create", payload) do
     user
     |> Notes.create_folder(payload)
@@ -134,7 +165,12 @@ defmodule TodexWeb.Realtime.CommandHandler do
 
   defp result({:ok, record}, id, key, event_type) do
     payload = record_payload(key, record)
-    {:ok, ok_response(id, payload), %{type: event_type, payload: payload}}
+    {:ok, ok_response(id, payload), broadcasts(record, key, event_type, payload)}
+  end
+
+  defp result({:ok, task, affected_goals}, id, :task, event_type) do
+    payload = record_payload(:task, task)
+    {:ok, ok_response(id, payload), task_broadcasts(event_type, payload, affected_goals)}
   end
 
   defp result({:error, reason}, id, _key, _event_type) do
@@ -143,10 +179,25 @@ defmodule TodexWeb.Realtime.CommandHandler do
 
   defp record_payload(:list, list), do: %{list: Json.list(list)}
   defp record_payload(:task, task), do: %{task: Json.task(task)}
+  defp record_payload(:goal, goal), do: %{goal: Json.goal(goal)}
   defp record_payload(:note_folder, folder), do: %{note_folder: Json.note_folder(folder)}
   defp record_payload(:note, note), do: %{note: Json.note(note)}
 
+  defp task_broadcasts(event_type, payload, affected_goals) do
+    # Task writes can affect multiple linked goals. Each goal update remains a
+    # separate event to preserve the existing realtime protocol shape.
+    goal_broadcasts =
+      affected_goals
+      |> Enum.map(fn goal -> %{type: "goal:updated", payload: record_payload(:goal, goal)} end)
+
+    [%{type: event_type, payload: payload} | goal_broadcasts]
+  end
+
+  defp broadcasts(_record, _key, event_type, payload), do: [%{type: event_type, payload: payload}]
+
   defp payload_id(payload), do: Map.get(payload, "id") || Map.get(payload, :id)
+
+  defp task_id(payload), do: Map.get(payload, "task_id") || Map.get(payload, :task_id)
 
   defp ok_response(id, payload), do: %{id: id, type: "ok", payload: payload}
 

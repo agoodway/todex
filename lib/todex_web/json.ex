@@ -1,5 +1,6 @@
 defmodule TodexWeb.Json do
   alias Todex.Accounts.User
+  alias Todex.Goals.Goal
   alias Todex.Notes.Note
   alias Todex.Notes.NoteFolder
   alias Todex.Todos.List
@@ -39,6 +40,18 @@ defmodule TodexWeb.Json do
       position: task.position,
       inserted_at: datetime(task.inserted_at),
       updated_at: datetime(task.updated_at)
+    }
+  end
+
+  def goal(%Goal{} = goal) do
+    %{
+      id: goal.id,
+      title: goal.title,
+      description: goal.description,
+      reason: goal.reason,
+      progress: goal.progress,
+      inserted_at: datetime(goal.inserted_at),
+      updated_at: datetime(goal.updated_at)
     }
   end
 

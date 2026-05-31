@@ -4,10 +4,14 @@ defmodule TodexWeb.ProtectedRouter do
     parser: [parsers: [], pass: ["*/*"]]
 
   alias Todex.Accounts
+  alias Todex.Goals
   alias Todex.Notes
   alias Todex.Todos
   alias TodexWeb.Errors
   alias TodexWeb.Json
+
+  defp task_result({:ok, task, _affected_goals}), do: {:ok, task}
+  defp task_result(result), do: result
 
   plug(TodexWeb.SafeParsers)
   plug(TodexWeb.AuthPlug)
@@ -127,7 +131,7 @@ defmodule TodexWeb.ProtectedRouter do
     Errors.require_json_body(conn, fn conn ->
       conn
       |> Errors.render_result(
-        Todos.create_task(conn.assigns.current_user, conn.body_params),
+        conn.assigns.current_user |> Todos.create_task(conn.body_params) |> task_result(),
         201,
         fn task ->
           %{task: Json.task(task)}
@@ -147,7 +151,9 @@ defmodule TodexWeb.ProtectedRouter do
     Errors.require_json_body(conn, fn conn ->
       conn
       |> Errors.render_result(
-        Todos.update_task(conn.assigns.current_user, conn.params["id"], conn.body_params),
+        conn.assigns.current_user
+        |> Todos.update_task(conn.params["id"], conn.body_params)
+        |> task_result(),
         200,
         fn task -> %{task: Json.task(task)} end
       )
@@ -157,7 +163,7 @@ defmodule TodexWeb.ProtectedRouter do
   delete("/tasks/:id", fn conn ->
     conn
     |> Errors.render_result(
-      Todos.delete_task(conn.assigns.current_user, conn.params["id"]),
+      conn.assigns.current_user |> Todos.delete_task(conn.params["id"]) |> task_result(),
       200,
       fn task ->
         %{task: Json.task(task)}
@@ -168,7 +174,7 @@ defmodule TodexWeb.ProtectedRouter do
   post("/tasks/:id/complete", fn conn ->
     conn
     |> Errors.render_result(
-      Todos.complete_task(conn.assigns.current_user, conn.params["id"]),
+      conn.assigns.current_user |> Todos.complete_task(conn.params["id"]) |> task_result(),
       200,
       fn task ->
         %{task: Json.task(task)}
@@ -179,11 +185,75 @@ defmodule TodexWeb.ProtectedRouter do
   post("/tasks/:id/reopen", fn conn ->
     conn
     |> Errors.render_result(
-      Todos.reopen_task(conn.assigns.current_user, conn.params["id"]),
+      conn.assigns.current_user |> Todos.reopen_task(conn.params["id"]) |> task_result(),
       200,
       fn task ->
         %{task: Json.task(task)}
       end
+    )
+  end)
+
+  get("/goals", fn conn ->
+    %{data: %{goals: conn.assigns.current_user |> Goals.list_goals() |> Enum.map(&Json.goal/1)}}
+  end)
+
+  post("/goals", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Goals.create_goal(conn.assigns.current_user, conn.body_params),
+        201,
+        fn goal -> %{goal: Json.goal(goal)} end
+      )
+    end)
+  end)
+
+  get("/goals/:id", fn conn ->
+    case Goals.get_goal(conn.assigns.current_user, conn.params["id"]) do
+      nil -> Errors.render_result(conn, {:error, :not_found}, 200, & &1)
+      goal -> %{data: %{goal: Json.goal(goal)}}
+    end
+  end)
+
+  patch("/goals/:id", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Goals.update_goal(conn.assigns.current_user, conn.params["id"], conn.body_params),
+        200,
+        fn goal -> %{goal: Json.goal(goal)} end
+      )
+    end)
+  end)
+
+  delete("/goals/:id", fn conn ->
+    conn
+    |> Errors.render_result(
+      Goals.delete_goal(conn.assigns.current_user, conn.params["id"]),
+      200,
+      fn goal -> %{goal: Json.goal(goal)} end
+    )
+  end)
+
+  post("/goals/:id/tasks", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      task_id = Map.get(conn.body_params, "task_id") || Map.get(conn.body_params, :task_id)
+
+      conn
+      |> Errors.render_result(
+        Goals.link_task(conn.assigns.current_user, conn.params["id"], task_id),
+        200,
+        fn goal -> %{goal: Json.goal(goal)} end
+      )
+    end)
+  end)
+
+  delete("/goals/:id/tasks/:task_id", fn conn ->
+    conn
+    |> Errors.render_result(
+      Goals.unlink_task(conn.assigns.current_user, conn.params["id"], conn.params["task_id"]),
+      200,
+      fn goal -> %{goal: Json.goal(goal)} end
     )
   end)
 

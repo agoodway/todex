@@ -29,6 +29,17 @@ defmodule TodexWeb.OpenApiTest do
     assert get_in(paths, ["/api/tasks", "get", "responses", "200", "content", "application/json"])
     assert get_in(response, ["components", "schemas", "Task", "properties", "title"])
     assert get_in(response, ["components", "schemas", "NoteFolder", "properties", "name"])
+    assert get_in(response, ["components", "schemas", "Goal", "properties", "title"])
+    assert get_in(response, ["components", "schemas", "GoalRequest", "properties", "reason"])
+
+    assert get_in(response, [
+             "components",
+             "schemas",
+             "GoalLinkTaskRequest",
+             "properties",
+             "task_id",
+             "format"
+           ]) == "uuid"
 
     assert get_in(response, [
              "components",
@@ -67,6 +78,15 @@ defmodule TodexWeb.OpenApiTest do
              "format"
            ]) == "date-time"
 
+    assert get_in(response, [
+             "components",
+             "schemas",
+             "Goal",
+             "properties",
+             "updated_at",
+             "format"
+           ]) == "date-time"
+
     assert get_in(paths, ["/api/auth/register", "post", "operationId"]) == "registerUser"
     assert get_in(paths, ["/api/auth/login", "post", "operationId"]) == "loginUser"
     assert get_in(paths, ["/api/auth/logout", "post", "operationId"]) == "logoutUser"
@@ -102,6 +122,32 @@ defmodule TodexWeb.OpenApiTest do
     assert get_in(paths, ["/api/notes/{id}/permanent", "delete", "operationId"]) ==
              "permanentlyDeleteNote"
 
+    assert get_in(paths, ["/api/goals", "get", "operationId"]) == "listGoals"
+    assert get_in(paths, ["/api/goals", "post", "operationId"]) == "createGoal"
+    assert get_in(paths, ["/api/goals/{id}", "get", "operationId"]) == "getGoal"
+    assert get_in(paths, ["/api/goals/{id}", "patch", "operationId"]) == "updateGoal"
+    assert get_in(paths, ["/api/goals/{id}", "delete", "operationId"]) == "deleteGoal"
+    assert get_in(paths, ["/api/goals/{id}/tasks", "post", "operationId"]) == "linkGoalTask"
+
+    assert get_in(paths, ["/api/goals/{id}/tasks/{task_id}", "delete", "operationId"]) ==
+             "unlinkGoalTask"
+
+    assert get_in(paths, ["/api/goals", "get", "security"]) == [%{"bearerAuth" => []}]
+
+    for {path, method} <- [
+          {"/api/goals", "get"},
+          {"/api/goals", "post"},
+          {"/api/goals/{id}", "get"},
+          {"/api/goals/{id}", "patch"},
+          {"/api/goals/{id}", "delete"},
+          {"/api/goals/{id}/tasks", "post"},
+          {"/api/goals/{id}/tasks/{task_id}", "delete"}
+        ] do
+      assert get_in(paths, [path, method, "security"]) == [%{"bearerAuth" => []}]
+      assert get_in(paths, [path, method, "responses", "401"])
+      assert get_in(paths, [path, method, "responses", "404"])
+    end
+
     assert response_statuses(paths, "/api/auth/register", "post") == [
              "201",
              "400",
@@ -130,6 +176,24 @@ defmodule TodexWeb.OpenApiTest do
            ]
 
     assert response_statuses(paths, "/api/tasks/{id}", "patch") == [
+             "200",
+             "400",
+             "401",
+             "404",
+             "415",
+             "422"
+           ]
+
+    assert response_statuses(paths, "/api/goals", "post") == [
+             "201",
+             "400",
+             "401",
+             "404",
+             "415",
+             "422"
+           ]
+
+    assert response_statuses(paths, "/api/goals/{id}/tasks", "post") == [
              "200",
              "400",
              "401",

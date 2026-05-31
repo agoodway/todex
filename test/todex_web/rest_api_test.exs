@@ -221,6 +221,195 @@ defmodule TodexWeb.RestApiTest do
              |> json_response(422)
   end
 
+  test "manages goals and task links through the JSON API" do
+    {token, list_id} = registered_token_and_list_id()
+
+    assert %{"data" => %{"goal" => %{"id" => goal_id, "progress" => 0}}} =
+             :post
+             |> json_conn(
+               "/api/goals",
+               %{title: "Launch", description: "Ship", reason: "Momentum", progress: 99},
+               token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"goals" => [%{"id" => ^goal_id}]}} =
+             :get
+             |> auth_conn("/api/goals", token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"task" => %{"id" => task_id}}} =
+             :post
+             |> json_conn(
+               "/api/tasks",
+               %{title: "Done", list_id: list_id, status: "completed"},
+               token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"goal" => %{"id" => ^goal_id, "progress" => 100}}} =
+             :post
+             |> json_conn("/api/goals/#{goal_id}/tasks", %{task_id: task_id}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"goal" => %{"id" => ^goal_id, "title" => "Updated"}}} =
+             :patch
+             |> json_conn("/api/goals/#{goal_id}", %{title: "Updated", progress: 1}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"goal" => %{"id" => ^goal_id, "progress" => 100}}} =
+             :patch
+             |> json_conn("/api/goals/#{goal_id}", %{progress: 1}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"goal" => %{"id" => ^goal_id, "progress" => 0}}} =
+             :delete
+             |> auth_conn("/api/goals/#{goal_id}/tasks/#{task_id}", token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :delete
+             |> auth_conn("/api/goals/#{goal_id}/tasks/#{task_id}", token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"data" => %{"goal" => %{"id" => ^goal_id}}} =
+             :delete
+             |> auth_conn("/api/goals/#{goal_id}", token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+  end
+
+  test "goal API returns validation, IDOR, JSON, content-type, and serialization errors" do
+    {token, list_id} = registered_token_and_list_id()
+    {other_token, other_list_id} = registered_token_and_list_id()
+
+    assert %{"error" => %{"code" => "validation_failed", "details" => %{"title" => _}}} =
+             :post
+             |> json_conn("/api/goals", %{title: ""}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(422)
+
+    assert %{"data" => %{"goal" => goal}} =
+             :post
+             |> json_conn(
+               "/api/goals",
+               %{title: "Goal", description: "Desc", reason: "Why"},
+               token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert Map.keys(goal) |> Enum.sort() == [
+             "description",
+             "id",
+             "inserted_at",
+             "progress",
+             "reason",
+             "title",
+             "updated_at"
+           ]
+
+    assert is_integer(goal["progress"])
+    assert is_binary(goal["inserted_at"])
+    assert is_binary(goal["updated_at"])
+
+    assert %{"data" => %{"goal" => %{"id" => other_goal_id}}} =
+             :post
+             |> json_conn("/api/goals", %{title: "Other goal"}, other_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"task" => %{"id" => other_task_id}}} =
+             :post
+             |> json_conn(
+               "/api/tasks",
+               %{title: "Other task", list_id: other_list_id},
+               other_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"task" => %{"id" => task_id}}} =
+             :post
+             |> json_conn("/api/tasks", %{title: "Owned task", list_id: list_id}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :get
+             |> auth_conn("/api/goals/#{other_goal_id}", token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :post
+             |> json_conn("/api/goals/#{goal["id"]}/tasks", %{task_id: other_task_id}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :post
+             |> json_conn("/api/goals/#{other_goal_id}/tasks", %{task_id: task_id}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    malformed_response =
+      conn(:post, "/api/goals", "{")
+      |> put_req_header("content-type", "application/json")
+      |> maybe_put_auth(token)
+      |> TodexWeb.Router.call(@opts)
+      |> json_response(400)
+
+    assert malformed_response == invalid_json_response()
+
+    missing_content_type_response =
+      conn(:post, "/api/goals", Jason.encode!(%{title: "Goal"}))
+      |> maybe_put_auth(token)
+      |> TodexWeb.Router.call(@opts)
+      |> json_response(415)
+
+    assert unsupported_media_type?(missing_content_type_response)
+  end
+
+  test "goal task link REST returns not_found for missing and malformed task ids" do
+    {token, _list_id} = registered_token_and_list_id()
+
+    assert %{"data" => %{"goal" => %{"id" => goal_id}}} =
+             :post
+             |> json_conn("/api/goals", %{title: "Goal"}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    for body <- [%{}, %{task_id: nil}, %{task_id: "not-a-uuid"}] do
+      assert %{"error" => %{"code" => "not_found"}} =
+               :post
+               |> json_conn("/api/goals/#{goal_id}/tasks", body, token)
+               |> TodexWeb.Router.call(@opts)
+               |> json_response(404)
+    end
+  end
+
+  test "REST timestamp fields parse as ISO8601 timestamps" do
+    {token, _list_id} = registered_token_and_list_id()
+
+    assert %{"data" => %{"goal" => goal}} =
+             :post
+             |> json_conn("/api/goals", %{title: "Timed"}, token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert {:ok, _, 0} = DateTime.from_iso8601(goal["inserted_at"])
+    assert {:ok, _, 0} = DateTime.from_iso8601(goal["updated_at"])
+  end
+
   test "protected endpoints reject missing bearer tokens" do
     response =
       conn(:get, "/api/lists")

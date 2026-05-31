@@ -2,6 +2,9 @@ defmodule Todex.TodosTest do
   use Todex.DataCase, async: true
 
   alias Todex.Onboarding
+  alias Todex.Goals
+  alias Todex.Goals.GoalTask
+  alias Todex.Repo
   alias Todex.Todos
 
   defp user_fixture(email) do
@@ -19,8 +22,19 @@ defmodule Todex.TodosTest do
 
   defp task_fixture(user, list, attrs) do
     attrs = Map.merge(%{title: "Task", list_id: list.id}, attrs)
-    assert {:ok, task} = Todos.create_task(user, attrs)
+    assert {:ok, task, []} = Todos.create_task(user, attrs)
     task
+  end
+
+  test "create_task returns the task and an empty affected goals list" do
+    user = user_fixture("task-create-result@example.com")
+    list = list_fixture(user)
+
+    assert {:ok, task, affected_goals} =
+             Todos.create_task(user, %{title: "Create result", list_id: list.id})
+
+    assert task.title == "Create result"
+    assert affected_goals == []
   end
 
   test "create_list creates a custom list for a user" do
@@ -95,7 +109,7 @@ defmodule Todex.TodosTest do
     task = task_fixture(user, list, %{title: "Before", notes: "old", due_date: Date.utc_today()})
     due_date = Date.utc_today() |> Date.add(5)
 
-    assert {:ok, updated_task} =
+    assert {:ok, updated_task, affected_goals} =
              Todos.update_task(user, task.id, %{
                "title" => "After",
                "notes" => "new notes",
@@ -103,6 +117,7 @@ defmodule Todex.TodosTest do
                "due_date" => Date.to_iso8601(due_date)
              })
 
+    assert affected_goals == []
     assert updated_task.title == "After"
     assert updated_task.notes == "new notes"
     assert updated_task.status == :completed
@@ -120,7 +135,8 @@ defmodule Todex.TodosTest do
     list = list_fixture(user)
     task = task_fixture(user, list, %{title: "Toggle"})
 
-    assert {:ok, completed_task} = Todos.complete_task(user, task.id)
+    assert {:ok, completed_task, completed_goals} = Todos.complete_task(user, task.id)
+    assert completed_goals == []
     assert completed_task.status == :completed
     assert %DateTime{} = completed_task.completed_at
 
@@ -128,7 +144,8 @@ defmodule Todex.TodosTest do
     assert completed_task.status == :completed
     assert %DateTime{} = completed_task.completed_at
 
-    assert {:ok, reopened_task} = Todos.reopen_task(user, task.id)
+    assert {:ok, reopened_task, reopened_goals} = Todos.reopen_task(user, task.id)
+    assert reopened_goals == []
     assert reopened_task.status == :active
     assert is_nil(reopened_task.completed_at)
 
@@ -237,7 +254,7 @@ defmodule Todex.TodosTest do
 
     assert {:error, :list_has_tasks} = Todos.delete_list(user, list.id)
 
-    assert {:ok, _task} = Todos.delete_task(user, task.id)
+    assert {:ok, _task, []} = Todos.delete_task(user, task.id)
     assert {:ok, _list} = Todos.delete_list(user, list.id)
     refute Enum.any?(Todos.list_lists(user), &(&1.id == list.id))
   end
@@ -256,5 +273,71 @@ defmodule Todex.TodosTest do
     assert {:error, :not_found} = Todos.reopen_task(other_user, task.id)
 
     assert {:error, :list_not_found} = Todos.update_task(user, task.id, %{list_id: other_list.id})
+  end
+
+  test "complete and reopen recompute linked goals and return affected goals explicitly" do
+    user = user_fixture("task-goal-complete@example.com")
+    list = list_fixture(user)
+    task = task_fixture(user, list, %{title: "Move progress"})
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Goal"})
+    assert {:ok, goal} = Goals.link_task(user, goal.id, task.id)
+    goal_id = goal.id
+    assert goal.progress == 0
+
+    assert {:ok, completed_task, completed_goals} = Todos.complete_task(user, task.id)
+    assert completed_task.status == :completed
+    assert [%{id: ^goal_id, progress: 100}] = completed_goals
+    assert Goals.get_goal(user, goal.id).progress == 100
+
+    assert {:ok, reopened_task, reopened_goals} = Todos.reopen_task(user, task.id)
+    assert reopened_task.status == :active
+    assert [%{id: ^goal_id, progress: 0}] = reopened_goals
+    assert Goals.get_goal(user, goal.id).progress == 0
+  end
+
+  test "delete_task recomputes previously linked goals, returns affected goals, and removes links" do
+    user = user_fixture("task-goal-delete@example.com")
+    list = list_fixture(user)
+    task = task_fixture(user, list, %{title: "Delete progress", status: "completed"})
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Goal"})
+    assert {:ok, goal} = Goals.link_task(user, goal.id, task.id)
+    goal_id = goal.id
+    assert goal.progress == 100
+
+    assert Repo.exists?(GoalTask)
+
+    assert {:ok, deleted_task, deleted_goals} = Todos.delete_task(user, task.id)
+    assert deleted_task.id == task.id
+    assert [%{id: ^goal_id, progress: 0}] = deleted_goals
+    assert Goals.get_goal(user, goal.id).progress == 0
+    refute Repo.exists?(GoalTask)
+  end
+
+  test "update_task recomputes linked goals when completion state changes" do
+    user = user_fixture("task-goal-update@example.com")
+    list = list_fixture(user)
+    task = task_fixture(user, list, %{title: "Update progress"})
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Goal"})
+    assert {:ok, _goal} = Goals.link_task(user, goal.id, task.id)
+    goal_id = goal.id
+
+    assert {:ok, updated_task, affected_goals} =
+             Todos.update_task(user, task.id, %{
+               status: "completed",
+               completed_at: DateTime.utc_now()
+             })
+
+    assert updated_task.status == :completed
+    assert [%{id: ^goal_id, progress: 100}] = affected_goals
+  end
+
+  test "task writes affecting no goals return an empty affected goals list" do
+    user = user_fixture("task-goal-empty@example.com")
+    list = list_fixture(user)
+    task = task_fixture(user, list, %{title: "No goals"})
+
+    assert {:ok, completed_task, affected_goals} = Todos.complete_task(user, task.id)
+    assert completed_task.status == :completed
+    assert affected_goals == []
   end
 end

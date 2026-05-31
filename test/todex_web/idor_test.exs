@@ -99,7 +99,9 @@ defmodule TodexWeb.IdorTest do
     {_user_b, token_b} = register_user("task-get-b")
 
     [list_a | _] = Todos.list_lists(user_a)
-    assert {:ok, task_a} = Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
+
+    assert {:ok, task_a, []} =
+             Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
 
     assert %{"error" => %{"code" => "not_found"}} =
              :get
@@ -113,7 +115,9 @@ defmodule TodexWeb.IdorTest do
     {_user_b, token_b} = register_user("task-patch-b")
 
     [list_a | _] = Todos.list_lists(user_a)
-    assert {:ok, task_a} = Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
+
+    assert {:ok, task_a, []} =
+             Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
 
     assert %{"error" => %{"code" => "not_found"}} =
              :patch
@@ -127,7 +131,9 @@ defmodule TodexWeb.IdorTest do
     {_user_b, token_b} = register_user("task-delete-b")
 
     [list_a | _] = Todos.list_lists(user_a)
-    assert {:ok, task_a} = Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
+
+    assert {:ok, task_a, []} =
+             Todos.create_task(user_a, %{title: "Private task", list_id: list_a.id})
 
     assert %{"error" => %{"code" => "not_found"}} =
              :delete

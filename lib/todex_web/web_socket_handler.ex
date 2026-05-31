@@ -19,8 +19,8 @@ defmodule TodexWeb.WebSocketHandler do
   unauthorized error shape and is NOT dispatched to CommandHandler.
 
   Per-connection auth state is stored in the transport process's process
-  dictionary under the key `:ws_auth` (nil = unauthenticated, user struct =
-  authenticated). The WS process runs each handler callback, so
+  dictionary under the key `:ws_auth` (nil = unauthenticated, map with user and
+  token = authenticated). The WS process runs each handler callback, so
   `Process.put/2`/`Process.get/1` are scoped to the correct connection.
   """
 
@@ -63,11 +63,6 @@ defmodule TodexWeb.WebSocketHandler do
 
   defp handle_auth(token, socket) do
     cond do
-      # Already authenticated: re-auth is an idempotent no-op. Skip verify_token
-      # and re-registration entirely and just reply auth_ok.
-      match?(%_{}, Process.get(:ws_auth)) ->
-        {:reply, %{type: "auth_ok"}}
-
       # Failed-auth cap reached: reject without doing any verify work.
       (Process.get(:ws_auth_failures) || 0) >= @max_auth_failures ->
         {:reply, error_response(nil, "unauthorized", "Unauthorized")}
@@ -80,28 +75,34 @@ defmodule TodexWeb.WebSocketHandler do
   defp verify_and_auth(token, socket) do
     case Accounts.verify_token(token) do
       {:ok, user} ->
-        Process.put(:ws_auth, user)
+        Process.put(:ws_auth, %{user: user, token: token})
         # Reset the failed-auth counter on a successful authentication.
         Process.put(:ws_auth_failures, 0)
         :ok = Todex.Realtime.register(user.id, socket.transport)
         {:reply, %{type: "auth_ok"}}
 
       {:error, :invalid_token} ->
-        Process.put(:ws_auth, nil)
+        clear_auth(socket)
         Process.put(:ws_auth_failures, (Process.get(:ws_auth_failures) || 0) + 1)
         {:reply, error_response(nil, "unauthorized", "Unauthorized")}
     end
   end
 
-  defp handle_command(envelope, _socket) do
-    case Process.get(:ws_auth) do
-      nil ->
+  defp handle_command(envelope, socket) do
+    case authorized_user(socket) do
+      {:error, :unauthorized} ->
         {:reply, error_response(nil, "unauthorized", "Unauthorized")}
 
-      user ->
+      {:error, :revoked} ->
+        {:reply, error_response(command_id(envelope), "unauthorized", "Unauthorized")}
+
+      {:ok, user} ->
         case TodexWeb.Realtime.CommandHandler.handle(user, envelope) do
-          {:ok, response, broadcast} ->
-            :ok = Todex.Realtime.broadcast(user.id, broadcast)
+          {:ok, response, broadcasts} ->
+            Enum.each(broadcasts, fn broadcast ->
+              :ok = Todex.Realtime.broadcast(user.id, broadcast)
+            end)
+
             {:reply, response}
 
           {:error, %{type: "error"} = response} ->
@@ -110,7 +111,36 @@ defmodule TodexWeb.WebSocketHandler do
     end
   end
 
+  defp authorized_user(socket) do
+    case Process.get(:ws_auth) do
+      %{user: user, token: token} ->
+        case Accounts.verify_token(token) do
+          {:ok, _user} ->
+            {:ok, user}
+
+          {:error, :invalid_token} ->
+            clear_auth(socket)
+            {:error, :revoked}
+        end
+
+      _ ->
+        {:error, :unauthorized}
+    end
+  end
+
+  defp clear_auth(socket) do
+    case Process.get(:ws_auth) do
+      %{user: user} -> Todex.Realtime.unregister(user.id, socket.transport)
+      _ -> :ok
+    end
+
+    Process.put(:ws_auth, nil)
+    {:error, :unauthorized}
+  end
+
   defp error_response(id, code, message, details \\ %{}) do
     %{id: id, type: "error", error: %{code: code, message: message, details: details}}
   end
+
+  defp command_id(envelope), do: Map.get(envelope, "id") || Map.get(envelope, :id)
 end

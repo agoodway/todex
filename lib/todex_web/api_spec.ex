@@ -26,6 +26,7 @@ defmodule TodexWeb.ApiSpec do
           "User" => Schemas.User.schema(),
           "List" => Schemas.List.schema(),
           "Task" => Schemas.Task.schema(),
+          "Goal" => Schemas.Goal.schema(),
           "NoteFolder" => Schemas.NoteFolder.schema(),
           "Note" => Schemas.Note.schema(),
           "AuthResponse" => Schemas.AuthResponse.schema(),
@@ -34,6 +35,8 @@ defmodule TodexWeb.ApiSpec do
           "LoginRequest" => Schemas.LoginRequest.schema(),
           "ListRequest" => Schemas.ListRequest.schema(),
           "TaskRequest" => Schemas.TaskRequest.schema(),
+          "GoalRequest" => Schemas.GoalRequest.schema(),
+          "GoalLinkTaskRequest" => Schemas.GoalLinkTaskRequest.schema(),
           "NoteFolderRequest" => Schemas.NoteFolderRequest.schema(),
           "NoteRequest" => Schemas.NoteRequest.schema()
         },
@@ -221,6 +224,80 @@ defmodule TodexWeb.ApiSpec do
             nil,
             200,
             ok(data_object(%{task: Schemas.Task}))
+          )
+      },
+      "/api/goals" => %PathItem{
+        get:
+          operation(
+            "listGoals",
+            "List goals",
+            "Return all goals for the authenticated user",
+            nil,
+            200,
+            ok(data_object(%{goals: array(Schemas.Goal)}))
+          ),
+        post:
+          operation(
+            "createGoal",
+            "Create goal",
+            "Create a goal",
+            request(Schemas.GoalRequest),
+            201,
+            created(data_object(%{goal: Schemas.Goal}))
+          )
+      },
+      "/api/goals/{id}" => %PathItem{
+        parameters: [id_parameter()],
+        get:
+          operation(
+            "getGoal",
+            "Get goal",
+            "Return a goal",
+            nil,
+            200,
+            ok(data_object(%{goal: Schemas.Goal}))
+          ),
+        patch:
+          operation(
+            "updateGoal",
+            "Update goal",
+            "Update a goal",
+            request(Schemas.GoalRequest),
+            200,
+            ok(data_object(%{goal: Schemas.Goal}))
+          ),
+        delete:
+          operation(
+            "deleteGoal",
+            "Delete goal",
+            "Delete a goal",
+            nil,
+            200,
+            ok(data_object(%{goal: Schemas.Goal}))
+          )
+      },
+      "/api/goals/{id}/tasks" => %PathItem{
+        parameters: [id_parameter()],
+        post:
+          operation(
+            "linkGoalTask",
+            "Link goal task",
+            "Link a task to a goal",
+            request(Schemas.GoalLinkTaskRequest),
+            200,
+            ok(data_object(%{goal: Schemas.Goal}))
+          )
+      },
+      "/api/goals/{id}/tasks/{task_id}" => %PathItem{
+        parameters: [id_parameter(), task_id_parameter()],
+        delete:
+          operation(
+            "unlinkGoalTask",
+            "Unlink goal task",
+            "Unlink a task from a goal",
+            nil,
+            200,
+            ok(data_object(%{goal: Schemas.Goal}))
           )
       },
       "/api/note-folders" => %PathItem{
@@ -428,6 +505,15 @@ defmodule TodexWeb.ApiSpec do
   defp id_parameter do
     %Parameter{
       name: "id",
+      in: :path,
+      required: true,
+      schema: %Schema{type: :string, format: :uuid}
+    }
+  end
+
+  defp task_id_parameter do
+    %Parameter{
+      name: "task_id",
       in: :path,
       required: true,
       schema: %Schema{type: :string, format: :uuid}

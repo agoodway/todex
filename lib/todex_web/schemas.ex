@@ -59,6 +59,25 @@ defmodule TodexWeb.Schemas do
     })
   end
 
+  defmodule Goal do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "Goal",
+      type: :object,
+      required: [:id, :title, :progress, :inserted_at, :updated_at],
+      properties: %{
+        id: %Schema{type: :string, format: :uuid},
+        title: %Schema{type: :string},
+        description: %Schema{type: :string, nullable: true},
+        reason: %Schema{type: :string, nullable: true},
+        progress: %Schema{type: :integer, minimum: 0, maximum: 100},
+        inserted_at: %Schema{type: :string, format: :"date-time"},
+        updated_at: %Schema{type: :string, format: :"date-time"}
+      }
+    })
+  end
+
   defmodule NoteFolder do
     require OpenApiSpex
 
@@ -188,6 +207,33 @@ defmodule TodexWeb.Schemas do
         notes: %Schema{type: :string, nullable: true},
         due_date: %Schema{type: :string, format: :date, nullable: true},
         position: %Schema{type: :integer}
+      }
+    })
+  end
+
+  defmodule GoalRequest do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "GoalRequest",
+      type: :object,
+      properties: %{
+        title: %Schema{type: :string},
+        description: %Schema{type: :string, nullable: true},
+        reason: %Schema{type: :string, nullable: true}
+      }
+    })
+  end
+
+  defmodule GoalLinkTaskRequest do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "GoalLinkTaskRequest",
+      type: :object,
+      required: [:task_id],
+      properties: %{
+        task_id: %Schema{type: :string, format: :uuid}
       }
     })
   end

@@ -313,7 +313,7 @@ defmodule TodexWeb.RestValidationTest do
 
     [list | _] = Todos.list_lists(user)
 
-    assert {:ok, _task} =
+    assert {:ok, _task, []} =
              Todos.create_task(user, %{
                title: "Has due date",
                list_id: list.id,

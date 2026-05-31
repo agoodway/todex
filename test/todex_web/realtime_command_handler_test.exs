@@ -2,6 +2,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
   use Todex.DataCase, async: true
 
   alias Todex.Accounts
+  alias Todex.Goals
   alias Todex.Notes
   alias Todex.Onboarding
   alias Todex.Realtime
@@ -11,7 +12,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
   test "task:create creates a task and returns ok response and created broadcast" do
     %{user: user, list_id: list_id} = registered_user_with_list()
 
-    assert {:ok, response, broadcast} =
+    assert {:ok, response, [broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "1",
                "type" => "task:create",
@@ -50,7 +51,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
   test "list:create creates a list and returns ok response and created broadcast" do
     %{user: user} = registered_user_with_list()
 
-    assert {:ok, response, broadcast} =
+    assert {:ok, response, [broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "3",
                "type" => "list:create",
@@ -220,9 +221,9 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
   test "task:delete broadcasts the serialized deleted record" do
     %{user: user, list_id: list_id} = registered_user_with_list()
-    assert {:ok, task} = Todos.create_task(user, %{title: "Delete me", list_id: list_id})
+    assert {:ok, task, []} = Todos.create_task(user, %{title: "Delete me", list_id: list_id})
 
-    assert {:ok, _response, broadcast} =
+    assert {:ok, _response, [broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "5",
                "type" => "task:delete",
@@ -239,9 +240,9 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
   test "task:complete and task:reopen broadcast task:updated" do
     %{user: user, list_id: list_id} = registered_user_with_list()
-    assert {:ok, task} = Todos.create_task(user, %{title: "Toggle me", list_id: list_id})
+    assert {:ok, task, []} = Todos.create_task(user, %{title: "Toggle me", list_id: list_id})
 
-    assert {:ok, _response, complete_broadcast} =
+    assert {:ok, _response, [complete_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "6",
                "type" => "task:complete",
@@ -250,7 +251,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert %{type: "task:updated", payload: %{task: %{status: "completed"}}} = complete_broadcast
 
-    assert {:ok, _response, reopen_broadcast} =
+    assert {:ok, _response, [reopen_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "7",
                "type" => "task:reopen",
@@ -258,6 +259,202 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
              })
 
     assert %{type: "task:updated", payload: %{task: %{status: "active"}}} = reopen_broadcast
+  end
+
+  test "goal realtime commands return goal responses and broadcasts" do
+    %{user: user, list_id: list_id} = registered_user_with_list()
+    assert {:ok, task, []} = Todos.create_task(user, %{title: "Goal task", list_id: list_id})
+
+    assert {:ok, create_response, [create_broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-create",
+               "type" => "goal:create",
+               "payload" => %{"title" => "Launch", "reason" => "Momentum", "progress" => 99}
+             })
+
+    assert %{
+             id: "goal-create",
+             type: "ok",
+             payload: %{goal: %{id: goal_id, title: "Launch", reason: "Momentum", progress: 0}}
+           } = create_response
+
+    assert %{type: "goal:created", payload: %{goal: %{id: ^goal_id, progress: 0}}} =
+             create_broadcast
+
+    assert {:ok, update_response, [update_broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-update",
+               "type" => "goal:update",
+               "payload" => %{"id" => goal_id, "title" => "Updated", "progress" => 50}
+             })
+
+    assert %{payload: %{goal: %{id: ^goal_id, title: "Updated", progress: 0}}} =
+             update_response
+
+    assert %{type: "goal:updated", payload: %{goal: %{id: ^goal_id, title: "Updated"}}} =
+             update_broadcast
+
+    assert {:ok, link_response, [link_broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-link",
+               "type" => "goal:link_task",
+               "payload" => %{"id" => goal_id, "task_id" => task.id}
+             })
+
+    assert %{payload: %{goal: %{id: ^goal_id, progress: 0}}} = link_response
+
+    assert %{type: "goal:updated", payload: %{goal: %{id: ^goal_id, progress: 0}}} =
+             link_broadcast
+
+    assert {:ok, unlink_response, [unlink_broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-unlink",
+               "type" => "goal:unlink_task",
+               "payload" => %{"id" => goal_id, "task_id" => task.id}
+             })
+
+    assert %{payload: %{goal: %{id: ^goal_id, progress: 0}}} = unlink_response
+
+    assert %{type: "goal:updated", payload: %{goal: %{id: ^goal_id, progress: 0}}} =
+             unlink_broadcast
+
+    assert {:ok, delete_response, [delete_broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-delete",
+               "type" => "goal:delete",
+               "payload" => %{"id" => goal_id}
+             })
+
+    assert %{payload: %{goal: %{id: ^goal_id}}} = delete_response
+    assert %{type: "goal:deleted", payload: %{goal: %{id: ^goal_id}}} = delete_broadcast
+  end
+
+  test "goal realtime commands return not_found for missing or foreign resources" do
+    %{user: user} = registered_user_with_list()
+    %{user: other_user, list_id: other_list_id} = registered_user_with_list()
+    assert {:ok, other_goal} = Goals.create_goal(other_user, %{title: "Other goal"})
+
+    assert {:ok, other_task, []} =
+             Todos.create_task(other_user, %{title: "Other task", list_id: other_list_id})
+
+    for {type, payload} <- [
+          {"goal:update", %{"id" => other_goal.id, "title" => "Nope"}},
+          {"goal:delete", %{"id" => Ecto.UUID.generate()}},
+          {"goal:link_task", %{"id" => other_goal.id, "task_id" => other_task.id}},
+          {"goal:unlink_task", %{"id" => Ecto.UUID.generate(), "task_id" => other_task.id}}
+        ] do
+      assert {:error, response} =
+               CommandHandler.handle(user, %{"id" => type, "type" => type, "payload" => payload})
+
+      assert response.error.code == "not_found"
+    end
+  end
+
+  test "task commands broadcast affected goal updates after task events" do
+    %{user: user, list_id: list_id} = registered_user_with_list()
+    assert {:ok, task, []} = Todos.create_task(user, %{title: "Fanout task", list_id: list_id})
+    assert {:ok, goal_a} = Goals.create_goal(user, %{title: "Goal A"})
+    assert {:ok, goal_b} = Goals.create_goal(user, %{title: "Goal B"})
+    assert {:ok, _goal_a} = Goals.link_task(user, goal_a.id, task.id)
+    assert {:ok, _goal_b} = Goals.link_task(user, goal_b.id, task.id)
+
+    assert {:ok, _response, broadcasts} =
+             CommandHandler.handle(user, %{
+               "id" => "task-complete-fanout",
+               "type" => "task:complete",
+               "payload" => %{"id" => task.id}
+             })
+
+    assert [task_broadcast, goal_broadcast_a, goal_broadcast_b] = broadcasts
+
+    assert %{type: "task:updated", payload: %{task: %{id: task_id, status: "completed"}}} =
+             task_broadcast
+
+    assert task_id == task.id
+
+    assert Enum.map([goal_broadcast_a, goal_broadcast_b], & &1.type) == [
+             "goal:updated",
+             "goal:updated"
+           ]
+
+    assert Enum.sort([goal_a.id, goal_b.id]) ==
+             [goal_broadcast_a, goal_broadcast_b]
+             |> Enum.map(& &1.payload.goal.id)
+             |> Enum.sort()
+
+    assert Enum.all?([goal_broadcast_a, goal_broadcast_b], &(&1.payload.goal.progress == 100))
+  end
+
+  test "websocket handler broadcasts every event returned by a command" do
+    %{token: token, user: user, list_id: list_id} = registered_token_user_and_list()
+    assert {:ok, task, []} = Todos.create_task(user, %{title: "Socket task", list_id: list_id})
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Socket goal"})
+    assert {:ok, _goal} = Goals.link_task(user, goal.id, task.id)
+    socket = %{transport: self()}
+
+    TodexWeb.WebSocketHandler.handle_ws_event(:join, socket)
+
+    auth_msg = Jason.encode!(%{"type" => "auth", "payload" => %{"token" => token}})
+
+    assert {:reply, %{type: "auth_ok"}} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, auth_msg}, socket)
+
+    command =
+      Jason.encode!(%{
+        "id" => "socket-task-complete",
+        "type" => "task:complete",
+        "payload" => %{"id" => task.id}
+      })
+
+    assert {:reply, %{type: "ok"}} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, command}, socket)
+
+    assert_receive task_payload
+    assert_receive goal_payload
+
+    assert %{"type" => "task:updated", "payload" => %{"task" => %{"id" => task_id}}} =
+             Jason.decode!(task_payload)
+
+    assert %{"type" => "goal:updated", "payload" => %{"goal" => %{"id" => goal_id}}} =
+             Jason.decode!(goal_payload)
+
+    assert task_id == task.id
+    assert goal_id == goal.id
+
+    assert :ok = Realtime.unregister(user.id, self())
+  end
+
+  test "websocket command after token revocation returns unauthorized and unregisters transport" do
+    %{token: token, user: user} = registered_token_user_and_list()
+    socket = %{transport: self()}
+
+    TodexWeb.WebSocketHandler.handle_ws_event(:join, socket)
+
+    auth_msg = Jason.encode!(%{"type" => "auth", "payload" => %{"token" => token}})
+
+    assert {:reply, %{type: "auth_ok"}} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, auth_msg}, socket)
+
+    assert Realtime.registered?(user.id, self())
+    :ok = Accounts.logout_token(token)
+
+    command =
+      Jason.encode!(%{
+        "id" => "revoked-command",
+        "type" => "list:create",
+        "payload" => %{"name" => "Should not run"}
+      })
+
+    assert {:reply, response} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, command}, socket)
+
+    assert response == %{
+             id: "revoked-command",
+             type: "error",
+             error: %{code: "unauthorized", message: "Unauthorized", details: %{}}
+           }
+
+    refute Realtime.registered?(user.id, self())
   end
 
   test "changeset errors return validation_failed with details" do
@@ -281,10 +478,48 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
            }
   end
 
+  test "goal task realtime commands return not_found for missing and malformed task ids" do
+    %{user: user} = registered_user_with_list()
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Goal"})
+
+    for {type, payload} <- [
+          {"goal:link_task", %{"id" => goal.id}},
+          {"goal:link_task", %{"id" => goal.id, "task_id" => "not-a-uuid"}},
+          {"goal:unlink_task", %{"id" => goal.id}},
+          {"goal:unlink_task", %{"id" => goal.id, "task_id" => "not-a-uuid"}}
+        ] do
+      assert {:error, response} =
+               CommandHandler.handle(user, %{"id" => type, "type" => type, "payload" => payload})
+
+      assert response.error.code == "not_found"
+    end
+  end
+
+  test "goal:update ignores client-supplied progress when derived progress is non-zero" do
+    %{user: user, list_id: list_id} = registered_user_with_list()
+
+    assert {:ok, task, []} =
+             Todos.create_task(user, %{title: "Done", list_id: list_id, status: "completed"})
+
+    assert {:ok, goal} = Goals.create_goal(user, %{title: "Goal"})
+    assert {:ok, goal} = Goals.link_task(user, goal.id, task.id)
+    assert goal.progress == 100
+
+    assert {:ok, response, [broadcast]} =
+             CommandHandler.handle(user, %{
+               "id" => "goal-ignore-progress",
+               "type" => "goal:update",
+               "payload" => %{"id" => goal.id, "progress" => 1, "title" => "Renamed"}
+             })
+
+    assert response.payload.goal.progress == 100
+    assert broadcast.payload.goal.progress == 100
+  end
+
   test "note realtime commands return ok responses and broadcasts" do
     %{user: user, folder_id: folder_id} = registered_user_with_note_folder()
 
-    assert {:ok, create_response, create_broadcast} =
+    assert {:ok, create_response, [create_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-1",
                "type" => "note:create",
@@ -303,7 +538,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert %{type: "note:created", payload: %{note: %{id: ^note_id}}} = create_broadcast
 
-    assert {:ok, _response, pin_broadcast} =
+    assert {:ok, _response, [pin_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-2",
                "type" => "note:pin",
@@ -312,7 +547,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert %{type: "note:updated", payload: %{note: %{pinned: true}}} = pin_broadcast
 
-    assert {:ok, _response, delete_broadcast} =
+    assert {:ok, _response, [delete_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-3",
                "type" => "note:delete",
@@ -326,7 +561,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
   test "note folder realtime commands return ok responses and broadcasts" do
     %{user: user} = registered_user_with_note_folder()
 
-    assert {:ok, create_response, create_broadcast} =
+    assert {:ok, create_response, [create_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "folder-1",
                "type" => "note_folder:create",
@@ -342,7 +577,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert %{type: "note_folder:created", payload: %{note_folder: %{id: ^folder_id}}} =
              create_broadcast
 
-    assert {:ok, _update_response, update_broadcast} =
+    assert {:ok, _update_response, [update_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "folder-2",
                "type" => "note_folder:update",
@@ -352,7 +587,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert %{type: "note_folder:updated", payload: %{note_folder: %{name: "Updated folder"}}} =
              update_broadcast
 
-    assert {:ok, _delete_response, delete_broadcast} =
+    assert {:ok, _delete_response, [delete_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "folder-3",
                "type" => "note_folder:delete",
@@ -371,7 +606,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert {:ok, _note} = Notes.soft_delete_note(user, note.id)
 
-    assert {:ok, _update_response, update_broadcast} =
+    assert {:ok, _update_response, [update_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-update",
                "type" => "note:update",
@@ -381,7 +616,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert %{type: "note:updated", payload: %{note: %{title: "Updated realtime note"}}} =
              update_broadcast
 
-    assert {:ok, _unpin_response, unpin_broadcast} =
+    assert {:ok, _unpin_response, [unpin_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-unpin",
                "type" => "note:unpin",
@@ -390,7 +625,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert %{type: "note:updated", payload: %{note: %{pinned: false}}} = unpin_broadcast
 
-    assert {:ok, _restore_response, restore_broadcast} =
+    assert {:ok, _restore_response, [restore_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-restore",
                "type" => "note:restore",
@@ -399,7 +634,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
 
     assert %{type: "note:restored", payload: %{note: %{deleted_at: nil}}} = restore_broadcast
 
-    assert {:ok, _delete_response, delete_broadcast} =
+    assert {:ok, _delete_response, [delete_broadcast]} =
              CommandHandler.handle(user, %{
                "id" => "note-permanent-delete",
                "type" => "note:permanent_delete",
@@ -496,7 +731,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert :ok = Realtime.unregister(user.id, self())
   end
 
-  test "re-auth on an already-authenticated connection is an idempotent no-op" do
+  test "re-auth on an already-authenticated connection revalidates token revocation" do
     %{token: token, user: user} = registered_token_user_and_list()
     socket = %{transport: self()}
 
@@ -507,17 +742,13 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert {:reply, %{type: "auth_ok"}} =
              TodexWeb.WebSocketHandler.handle_ws_event({:received, auth_msg}, socket)
 
-    # Revoke the token. A re-auth on an already-authenticated connection must
-    # NOT call verify_token (which would now fail) and must reply auth_ok.
     :ok = Accounts.logout_token(token)
 
-    assert {:reply, %{type: "auth_ok"}} =
+    assert {:reply, response} =
              TodexWeb.WebSocketHandler.handle_ws_event({:received, auth_msg}, socket)
 
-    assert Realtime.registered?(user.id, self())
-
-    # Cleanup
-    assert :ok = Realtime.unregister(user.id, self())
+    assert response.error.code == "unauthorized"
+    refute Realtime.registered?(user.id, self())
   end
 
   defp registered_user_with_list do

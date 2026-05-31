@@ -41,7 +41,7 @@ defmodule TodexWeb.WsIdorTest do
     user_b = register_user("task-update-b")
 
     [list_a | _] = Todos.list_lists(user_a)
-    assert {:ok, task_a} = Todos.create_task(user_a, %{title: "Private", list_id: list_a.id})
+    assert {:ok, task_a, []} = Todos.create_task(user_a, %{title: "Private", list_id: list_a.id})
 
     assert {:error, response} =
              CommandHandler.handle(user_b, %{
@@ -58,7 +58,7 @@ defmodule TodexWeb.WsIdorTest do
     user_b = register_user("task-delete-b")
 
     [list_a | _] = Todos.list_lists(user_a)
-    assert {:ok, task_a} = Todos.create_task(user_a, %{title: "Private", list_id: list_a.id})
+    assert {:ok, task_a, []} = Todos.create_task(user_a, %{title: "Private", list_id: list_a.id})
 
     assert {:error, response} =
              CommandHandler.handle(user_b, %{

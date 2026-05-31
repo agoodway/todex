@@ -2,6 +2,8 @@ defmodule Todex.SchemaTest do
   use Todex.DataCase, async: true
 
   alias Todex.Accounts.User
+  alias Todex.Goals.Goal
+  alias Todex.Goals.GoalTask
   alias Todex.Notes
   alias Todex.Notes.Note
   alias Todex.Notes.NoteFolder
@@ -45,6 +47,45 @@ defmodule Todex.SchemaTest do
              title: ["can't be blank"],
              user_id: ["can't be blank"],
              folder_id: ["can't be blank"]
+           } = errors_on(changeset)
+  end
+
+  test "goal changeset requires user_id and title" do
+    changeset = Goal.changeset(%Goal{}, %{})
+
+    assert %{user_id: ["can't be blank"], title: ["can't be blank"]} = errors_on(changeset)
+  end
+
+  test "goal changeset rejects title over 255 characters" do
+    changeset =
+      Goal.changeset(%Goal{}, %{
+        user_id: Ecto.UUID.generate(),
+        title: String.duplicate("x", 256)
+      })
+
+    assert %{title: [_ | _]} = errors_on(changeset)
+  end
+
+  test "goal changeset ignores client-supplied progress" do
+    changeset =
+      Goal.changeset(%Goal{}, %{
+        user_id: Ecto.UUID.generate(),
+        title: "Launch",
+        description: "Ship the API",
+        reason: "Users need it",
+        progress: 75
+      })
+
+    refute Map.has_key?(changeset.changes, :progress)
+  end
+
+  test "goal task changeset requires user_id, goal_id, and task_id" do
+    changeset = GoalTask.changeset(%GoalTask{}, %{})
+
+    assert %{
+             user_id: ["can't be blank"],
+             goal_id: ["can't be blank"],
+             task_id: ["can't be blank"]
            } = errors_on(changeset)
   end
 
