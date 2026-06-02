@@ -6,6 +6,7 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
   alias Todex.Notes
   alias Todex.Onboarding
   alias Todex.Realtime
+  alias Todex.Sharing
   alias Todex.Todos
   alias TodexWeb.Realtime.CommandHandler
 
@@ -424,6 +425,145 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
     assert :ok = Realtime.unregister(user.id, self())
   end
 
+  test "websocket list updates fan out to shared recipients" do
+    %{token: owner_token, user: owner, list_id: list_id} = registered_token_user_and_list()
+    %{user: recipient} = registered_user_with_list()
+
+    assert {:ok, _share} =
+             Sharing.create_list_share(owner, list_id, %{
+               recipient_email: recipient.email,
+               role: "viewer"
+             })
+
+    recipient_transport = forwarding_transport(self(), :recipient)
+    assert :ok = Realtime.register(recipient.id, recipient_transport)
+
+    socket = %{transport: self()}
+    TodexWeb.WebSocketHandler.handle_ws_event(:join, socket)
+
+    auth_msg = Jason.encode!(%{"type" => "auth", "payload" => %{"token" => owner_token}})
+
+    assert {:reply, %{type: "auth_ok"}} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, auth_msg}, socket)
+
+    command =
+      Jason.encode!(%{
+        "id" => "shared-list-update",
+        "type" => "list:update",
+        "payload" => %{"id" => list_id, "name" => "Fanout list"}
+      })
+
+    assert {:reply, %{type: "ok"}} =
+             TodexWeb.WebSocketHandler.handle_ws_event({:received, command}, socket)
+
+    assert_receive owner_payload
+
+    assert %{"type" => "list:updated", "payload" => %{"list" => %{"id" => ^list_id}}} =
+             Jason.decode!(owner_payload)
+
+    assert_receive {:recipient, recipient_payload}
+
+    assert %{"type" => "list:updated", "payload" => %{"list" => %{"id" => ^list_id}}} =
+             Jason.decode!(recipient_payload)
+
+    assert :ok = Realtime.unregister(owner.id, self())
+    assert :ok = Realtime.unregister(recipient.id, recipient_transport)
+  end
+
+  test "shared list realtime commands allow editors and reject viewers" do
+    %{user: owner, list_id: list_id} = registered_user_with_list()
+    %{user: editor} = registered_user_with_list()
+    %{user: viewer} = registered_user_with_list()
+
+    assert {:ok, _share} =
+             Sharing.create_list_share(owner, list_id, %{
+               recipient_email: editor.email,
+               role: "editor"
+             })
+
+    assert {:ok, _share} =
+             Sharing.create_list_share(owner, list_id, %{
+               recipient_email: viewer.email,
+               role: "viewer"
+             })
+
+    assert {:ok, response, [broadcast]} =
+             CommandHandler.handle(editor, %{
+               "id" => "shared-task-create",
+               "type" => "task:create",
+               "payload" => %{"list_id" => list_id, "title" => "Shared task"}
+             })
+
+    assert %{payload: %{task: %{id: task_id, title: "Shared task"}}} = response
+
+    assert %{type: "task:created", payload: %{task: %{id: ^task_id}}, recipients: recipients} =
+             broadcast
+
+    assert Enum.sort(recipients) == Enum.sort([owner.id, editor.id, viewer.id])
+
+    assert {:error, viewer_response} =
+             CommandHandler.handle(viewer, %{
+               "id" => "viewer-task-create",
+               "type" => "task:create",
+               "payload" => %{"list_id" => list_id, "title" => "Nope"}
+             })
+
+    assert viewer_response.error.code == "forbidden"
+  end
+
+  test "shared note realtime commands allow editors and reject viewers and lifecycle edits" do
+    %{user: owner, folder_id: folder_id} = registered_user_with_note_folder()
+    %{user: editor} = registered_user_with_list()
+    %{user: viewer} = registered_user_with_list()
+    assert {:ok, note} = Notes.create_note(owner, %{folder_id: folder_id, title: "Shared note"})
+
+    assert {:ok, _share} =
+             Sharing.create_note_share(owner, note.id, %{
+               recipient_email: editor.email,
+               role: "editor"
+             })
+
+    assert {:ok, _share} =
+             Sharing.create_note_share(owner, note.id, %{
+               recipient_email: viewer.email,
+               role: "viewer"
+             })
+
+    assert {:ok, _response, [broadcast]} =
+             CommandHandler.handle(editor, %{
+               "id" => "shared-note-update",
+               "type" => "note:update",
+               "payload" => %{"id" => note.id, "title" => "Edited note"}
+             })
+
+    assert %{
+             type: "note:updated",
+             payload: %{note: %{id: note_id, title: "Edited note"}},
+             recipients: recipients
+           } = broadcast
+
+    assert note_id == note.id
+    assert Enum.sort(recipients) == Enum.sort([owner.id, editor.id, viewer.id])
+
+    assert {:error, viewer_response} =
+             CommandHandler.handle(viewer, %{
+               "id" => "viewer-note-update",
+               "type" => "note:update",
+               "payload" => %{"id" => note.id, "title" => "Nope"}
+             })
+
+    assert viewer_response.error.code == "forbidden"
+
+    assert {:error, editor_delete_response} =
+             CommandHandler.handle(editor, %{
+               "id" => "editor-note-delete",
+               "type" => "note:delete",
+               "payload" => %{"id" => note.id}
+             })
+
+    assert editor_delete_response.error.code == "forbidden"
+  end
+
   test "websocket command after token revocation returns unauthorized and unregisters transport" do
     %{token: token, user: user} = registered_token_user_and_list()
     socket = %{transport: self()}
@@ -776,5 +916,19 @@ defmodule TodexWeb.RealtimeCommandHandlerTest do
              Onboarding.register_user(%{email: email, password: "super-secret-password"})
 
     %{user: user, folder_id: user |> Notes.list_folders() |> hd() |> Map.fetch!(:id)}
+  end
+
+  defp forwarding_transport(test_pid, tag) do
+    spawn(fn ->
+      forward_messages(test_pid, tag)
+    end)
+  end
+
+  defp forward_messages(test_pid, tag) do
+    receive do
+      payload ->
+        send(test_pid, {tag, payload})
+        forward_messages(test_pid, tag)
+    end
   end
 end

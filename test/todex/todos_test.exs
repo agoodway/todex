@@ -5,6 +5,7 @@ defmodule Todex.TodosTest do
   alias Todex.Goals
   alias Todex.Goals.GoalTask
   alias Todex.Repo
+  alias Todex.Sharing
   alias Todex.Todos
 
   defp user_fixture(email) do
@@ -24,6 +25,16 @@ defmodule Todex.TodosTest do
     attrs = Map.merge(%{title: "Task", list_id: list.id}, attrs)
     assert {:ok, task, []} = Todos.create_task(user, attrs)
     task
+  end
+
+  defp share_list(owner, recipient, list, role) do
+    assert {:ok, share} =
+             Sharing.create_list_share(owner, list.id, %{
+               recipient_email: recipient.email,
+               role: Atom.to_string(role)
+             })
+
+    share
   end
 
   test "create_task returns the task and an empty affected goals list" do
@@ -101,6 +112,81 @@ defmodule Todex.TodosTest do
     refute updated_list.is_default
     persisted_list = Enum.find(Todos.list_lists(user), &(&1.id == list.id))
     refute persisted_list.is_default
+  end
+
+  test "shared-list viewers can read lists and tasks but cannot mutate them" do
+    owner = user_fixture("shared-viewer-owner@example.com")
+    viewer = user_fixture("shared-viewer-recipient@example.com")
+    list = list_fixture(owner, %{name: "Read me"})
+    task = task_fixture(owner, list, %{title: "Visible task"})
+    share_list(owner, viewer, list, :viewer)
+
+    assert %{id: list_id} = Todos.get_list(viewer, list.id)
+    assert list_id == list.id
+    assert %{id: task_id} = Todos.get_task(viewer, task.id)
+    assert task_id == task.id
+    assert Enum.map(Todos.list_tasks(viewer, %{list_id: list.id}), & &1.id) == [task.id]
+
+    assert {:error, :forbidden} = Todos.update_list(viewer, list.id, %{name: "Nope"})
+    assert {:error, :forbidden} = Todos.delete_list(viewer, list.id)
+    assert {:error, :forbidden} = Todos.create_task(viewer, %{title: "Nope", list_id: list.id})
+    assert {:error, :forbidden} = Todos.update_task(viewer, task.id, %{title: "Nope"})
+    assert {:error, :forbidden} = Todos.delete_task(viewer, task.id)
+    assert {:error, :forbidden} = Todos.complete_task(viewer, task.id)
+    assert {:error, :forbidden} = Todos.reopen_task(viewer, task.id)
+  end
+
+  test "shared-list editors can update list metadata and manage owner-owned tasks" do
+    owner = user_fixture("shared-editor-owner@example.com")
+    editor = user_fixture("shared-editor-recipient@example.com")
+    list = list_fixture(owner, %{name: "Before share", position: 4})
+    task = task_fixture(owner, list, %{title: "Before task"})
+    share_list(owner, editor, list, :editor)
+
+    assert {:ok, updated_list} =
+             Todos.update_list(editor, list.id, %{name: "After share", position: 1})
+
+    assert updated_list.name == "After share"
+    assert updated_list.user_id == owner.id
+    assert {:error, :forbidden} = Todos.delete_list(editor, list.id)
+
+    assert {:ok, created_task, []} =
+             Todos.create_task(editor, %{title: "Collaborator task", list_id: list.id})
+
+    assert created_task.user_id == owner.id
+    assert created_task.list_id == list.id
+
+    assert {:ok, updated_task, []} = Todos.update_task(editor, task.id, %{title: "After task"})
+    assert updated_task.title == "After task"
+    assert updated_task.user_id == owner.id
+
+    assert {:ok, completed_task, []} = Todos.complete_task(editor, task.id)
+    assert completed_task.status == :completed
+
+    assert {:ok, reopened_task, []} = Todos.reopen_task(editor, task.id)
+    assert reopened_task.status == :active
+
+    assert {:ok, deleted_task, []} = Todos.delete_task(editor, task.id)
+    assert deleted_task.id == task.id
+    assert nil == Todos.get_task(owner, task.id)
+  end
+
+  test "shared-list editor task writes recompute the owner goals" do
+    owner = user_fixture("shared-editor-goal-owner@example.com")
+    editor = user_fixture("shared-editor-goal-recipient@example.com")
+    list = list_fixture(owner)
+    task = task_fixture(owner, list, %{title: "Goal task"})
+    assert {:ok, goal} = Goals.create_goal(owner, %{title: "Owner goal"})
+    assert {:ok, goal} = Goals.link_task(owner, goal.id, task.id)
+    share_list(owner, editor, list, :editor)
+
+    assert goal.progress == 0
+
+    assert {:ok, completed_task, affected_goals} = Todos.complete_task(editor, task.id)
+    assert completed_task.status == :completed
+    assert [%{id: goal_id, progress: 100}] = affected_goals
+    assert goal_id == goal.id
+    assert Goals.get_goal(owner, goal.id).progress == 100
   end
 
   test "update_task persists title, notes, status, and due_date updates" do

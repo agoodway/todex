@@ -221,6 +221,465 @@ defmodule TodexWeb.RestApiTest do
              |> json_response(422)
   end
 
+  test "manages list shares and shared list access through the JSON API" do
+    {owner_email, owner_token} = registered_user("list-share-owner")
+    {recipient_email, recipient_token} = registered_user("list-share-recipient")
+    {_stranger_email, stranger_token} = registered_user("list-share-stranger")
+    list_id = first_list_id(owner_token)
+
+    assert %{"data" => %{"message" => message}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert message =~ "resource has been shared"
+
+    assert %{"error" => %{"code" => "share_already_exists"}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(409)
+
+    assert %{"data" => %{"shares" => [share]}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{
+             "id" => share_id,
+             "list_id" => ^list_id,
+             "owner_id" => _owner_id,
+             "recipient" => %{"email" => ^recipient_email},
+             "role" => "viewer"
+           } = share
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             :patch
+             |> json_conn("/api/lists/#{list_id}", %{name: "Nope"}, recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(403)
+
+    assert %{"data" => %{"share" => %{"role" => "editor"}}} =
+             :patch
+             |> json_conn(
+               "/api/lists/#{list_id}/shares/#{share_id}",
+               %{role: "editor"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"list" => %{"name" => "Shared edit"}}} =
+             :patch
+             |> json_conn("/api/lists/#{list_id}", %{name: "Shared edit"}, recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             :delete
+             |> auth_conn("/api/lists/#{list_id}", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(403)
+
+    assert %{
+             "data" => %{
+               "lists" => [
+                 %{
+                   "list" => %{"id" => ^list_id, "name" => "Shared edit"},
+                   "share" => %{"role" => "editor", "owner" => %{"email" => ^owner_email}}
+                 }
+               ],
+               "pagination" => %{"page" => 1, "page_size" => 20, "total" => 1}
+             }
+           } =
+             :get
+             |> auth_conn("/api/shared/lists", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", stranger_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"data" => %{"share" => %{"id" => ^share_id}}} =
+             :delete
+             |> auth_conn("/api/lists/#{list_id}/shares/#{share_id}", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"lists" => []}} =
+             :get
+             |> auth_conn("/api/shared/lists", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+  end
+
+  test "manages note shares and shared note access through the JSON API" do
+    {owner_email, owner_token} = registered_user("note-share-owner")
+    {recipient_email, recipient_token} = registered_user("note-share-recipient")
+    {_stranger_email, stranger_token} = registered_user("note-share-stranger")
+    folder_id = first_note_folder_id(owner_token)
+
+    assert %{"data" => %{"note" => %{"id" => note_id}}} =
+             :post
+             |> json_conn(
+               "/api/notes",
+               %{folder_id: folder_id, title: "Shared REST note", body: "Before"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"message" => _message}} =
+             :post
+             |> json_conn(
+               "/api/notes/#{note_id}/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert %{"data" => %{"shares" => [%{"id" => share_id, "role" => "viewer"}]}} =
+             :get
+             |> auth_conn("/api/notes/#{note_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"note" => %{"id" => ^note_id}}} =
+             :get
+             |> auth_conn("/api/notes/#{note_id}", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             :patch
+             |> json_conn("/api/notes/#{note_id}", %{title: "Nope"}, recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(403)
+
+    assert %{"data" => %{"share" => %{"role" => "editor"}}} =
+             :patch
+             |> json_conn(
+               "/api/notes/#{note_id}/shares/#{share_id}",
+               %{role: "editor"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"note" => %{"title" => "Edited", "body" => "After"}}} =
+             :patch
+             |> json_conn(
+               "/api/notes/#{note_id}",
+               %{title: "Edited", body: "After"},
+               recipient_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             :delete
+             |> auth_conn("/api/notes/#{note_id}", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(403)
+
+    assert %{
+             "data" => %{
+               "notes" => [
+                 %{
+                   "note" => %{"id" => ^note_id, "title" => "Edited"},
+                   "share" => %{"role" => "editor", "owner" => %{"email" => ^owner_email}}
+                 }
+               ],
+               "pagination" => %{"page" => 1, "page_size" => 50, "total" => 1}
+             }
+           } =
+             :get
+             |> auth_conn("/api/shared/notes?page=1&page_size=50", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :get
+             |> auth_conn("/api/notes/#{note_id}/shares", recipient_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             :get
+             |> auth_conn("/api/notes/#{note_id}/shares", stranger_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+  end
+
+  test "share creation and revocation broadcast realtime discovery events" do
+    {owner_email, owner_token} = registered_user("share-realtime-owner")
+    {recipient_email, recipient_token} = registered_user("share-realtime-recipient")
+    recipient_id = user_id(recipient_token)
+    list_id = first_list_id(owner_token)
+
+    recipient_transport = forwarding_transport(self(), :recipient)
+    assert :ok = Todex.Realtime.register(recipient_id, recipient_transport)
+
+    assert %{"data" => %{"message" => _message}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert_receive {:recipient, shared_payload}
+
+    assert %{
+             "type" => "list:shared",
+             "payload" => %{
+               "list" => %{"id" => ^list_id},
+               "share" => %{"role" => "viewer", "owner" => %{"email" => ^owner_email}}
+             }
+           } = Jason.decode!(shared_payload)
+
+    assert %{"data" => %{"shares" => [%{"id" => share_id}]}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"share" => %{"role" => "editor"}}} =
+             :patch
+             |> json_conn(
+               "/api/lists/#{list_id}/shares/#{share_id}",
+               %{role: "editor"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert_receive {:recipient, role_updated_payload}
+
+    assert %{
+             "type" => "list:shared",
+             "payload" => %{
+               "list" => %{"id" => ^list_id},
+               "share" => %{"role" => "editor", "owner" => %{"email" => ^owner_email}}
+             }
+           } = Jason.decode!(role_updated_payload)
+
+    assert %{"data" => %{"share" => %{"id" => ^share_id}}} =
+             :delete
+             |> auth_conn("/api/lists/#{list_id}/shares/#{share_id}", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert_receive {:recipient, unshared_payload}
+
+    assert %{
+             "type" => "list:unshared",
+             "payload" => %{"list_id" => ^list_id, "share_id" => ^share_id}
+           } = Jason.decode!(unshared_payload)
+
+    folder_id = first_note_folder_id(owner_token)
+
+    assert %{"data" => %{"note" => %{"id" => note_id}}} =
+             :post
+             |> json_conn(
+               "/api/notes",
+               %{folder_id: folder_id, title: "Realtime shared note"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(201)
+
+    assert %{"data" => %{"message" => _message}} =
+             :post
+             |> json_conn(
+               "/api/notes/#{note_id}/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert_receive {:recipient, note_shared_payload}
+
+    assert %{
+             "type" => "note:shared",
+             "payload" => %{
+               "note" => %{"id" => ^note_id},
+               "share" => %{"role" => "viewer", "owner" => %{"email" => ^owner_email}}
+             }
+           } = Jason.decode!(note_shared_payload)
+
+    assert %{"data" => %{"shares" => [%{"id" => note_share_id}]}} =
+             :get
+             |> auth_conn("/api/notes/#{note_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert %{"data" => %{"share" => %{"role" => "editor"}}} =
+             :patch
+             |> json_conn(
+               "/api/notes/#{note_id}/shares/#{note_share_id}",
+               %{role: "editor"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert_receive {:recipient, note_role_updated_payload}
+
+    assert %{
+             "type" => "note:shared",
+             "payload" => %{
+               "note" => %{"id" => ^note_id},
+               "share" => %{"role" => "editor", "owner" => %{"email" => ^owner_email}}
+             }
+           } = Jason.decode!(note_role_updated_payload)
+
+    assert %{"data" => %{"share" => %{"id" => ^note_share_id}}} =
+             :delete
+             |> auth_conn("/api/notes/#{note_id}/shares/#{note_share_id}", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    assert_receive {:recipient, note_unshared_payload}
+
+    assert %{
+             "type" => "note:unshared",
+             "payload" => %{"note_id" => ^note_id, "share_id" => ^note_share_id}
+           } = Jason.decode!(note_unshared_payload)
+
+    assert :ok = Todex.Realtime.unregister(recipient_id, recipient_transport)
+  end
+
+  test "share creation validates request bodies and keeps unknown recipients neutral" do
+    {_owner_email, owner_token} = registered_user("share-validation-owner")
+    list_id = first_list_id(owner_token)
+
+    assert %{"error" => %{"code" => "validation_failed", "details" => %{"role" => _}}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: "missing@example.com", role: "admin"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(422)
+
+    assert %{"error" => %{"code" => "validation_failed", "details" => %{"recipient_email" => _}}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: "not-email", role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(422)
+
+    assert %{"data" => %{"message" => _message}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: "unknown@example.com", role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert %{"data" => %{"shares" => []}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+  end
+
+  test "share endpoints reject invalid identifiers, self shares, invalid roles, and non-owners" do
+    {owner_email, owner_token} = registered_user("share-boundary-owner")
+    {recipient_email, recipient_token} = registered_user("share-boundary-recipient")
+    list_id = first_list_id(owner_token)
+
+    # Invalid UUID in the list id resolves to a not-found owner lookup.
+    assert %{"error" => %{"code" => "not_found"}} =
+             :post
+             |> json_conn(
+               "/api/lists/not-a-uuid/shares",
+               %{recipient_email: recipient_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+
+    # Owners cannot share a resource with themselves.
+    assert %{"error" => %{"code" => "cannot_share_with_self"}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: owner_email, role: "viewer"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(422)
+
+    assert %{"data" => %{"message" => _}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: recipient_email, role: "editor"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(202)
+
+    assert %{"data" => %{"shares" => [%{"id" => share_id}]}} =
+             :get
+             |> auth_conn("/api/lists/#{list_id}/shares", owner_token)
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(200)
+
+    # Updating a share with an unsupported role fails validation.
+    assert %{"error" => %{"code" => "validation_failed", "details" => %{"role" => _}}} =
+             :patch
+             |> json_conn(
+               "/api/lists/#{list_id}/shares/#{share_id}",
+               %{role: "admin"},
+               owner_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(422)
+
+    # An editor recipient is not the owner, so re-sharing is hidden as not-found.
+    assert %{"error" => %{"code" => "not_found"}} =
+             :post
+             |> json_conn(
+               "/api/lists/#{list_id}/shares",
+               %{recipient_email: "third-party@example.com", role: "viewer"},
+               recipient_token
+             )
+             |> TodexWeb.Router.call(@opts)
+             |> json_response(404)
+  end
+
   test "manages goals and task links through the JSON API" do
     {token, list_id} = registered_token_and_list_id()
 
@@ -505,47 +964,71 @@ defmodule TodexWeb.RestApiTest do
   defp maybe_put_auth(conn, token), do: put_req_header(conn, "authorization", "Bearer #{token}")
 
   defp registered_token_and_list_id do
-    email = "content-type-#{System.unique_integer([:positive])}@example.com"
-
-    register_response =
-      :post
-      |> json_conn("/api/auth/register", %{email: email, password: "super-secret-password"})
-      |> TodexWeb.Router.call(@opts)
-      |> json_response(201)
-
-    token = get_in(register_response, ["data", "token"])
-
-    lists_response =
-      :get
-      |> auth_conn("/api/lists", token)
-      |> TodexWeb.Router.call(@opts)
-      |> json_response(200)
-
-    list_id = lists_response |> get_in(["data", "lists"]) |> hd() |> Map.fetch!("id")
+    {_email, token} = registered_user("content-type")
+    list_id = first_list_id(token)
 
     {token, list_id}
   end
 
   defp registered_token_and_note_folder_id do
-    email = "note-rest-#{System.unique_integer([:positive])}@example.com"
+    {_email, token} = registered_user("note-rest")
+    folder_id = first_note_folder_id(token)
 
-    register_response =
+    {token, folder_id}
+  end
+
+  defp registered_user(tag) do
+    email = "#{tag}-#{System.unique_integer([:positive])}@example.com"
+
+    response =
       :post
       |> json_conn("/api/auth/register", %{email: email, password: "super-secret-password"})
       |> TodexWeb.Router.call(@opts)
       |> json_response(201)
 
-    token = get_in(register_response, ["data", "token"])
+    {email, get_in(response, ["data", "token"])}
+  end
 
-    folders_response =
-      :get
-      |> auth_conn("/api/note-folders", token)
-      |> TodexWeb.Router.call(@opts)
-      |> json_response(200)
+  defp first_list_id(token) do
+    :get
+    |> auth_conn("/api/lists", token)
+    |> TodexWeb.Router.call(@opts)
+    |> json_response(200)
+    |> get_in(["data", "lists"])
+    |> hd()
+    |> Map.fetch!("id")
+  end
 
-    folder_id = folders_response |> get_in(["data", "note_folders"]) |> hd() |> Map.fetch!("id")
+  defp first_note_folder_id(token) do
+    :get
+    |> auth_conn("/api/note-folders", token)
+    |> TodexWeb.Router.call(@opts)
+    |> json_response(200)
+    |> get_in(["data", "note_folders"])
+    |> hd()
+    |> Map.fetch!("id")
+  end
 
-    {token, folder_id}
+  defp user_id(token) do
+    :get
+    |> auth_conn("/api/auth/me", token)
+    |> TodexWeb.Router.call(@opts)
+    |> json_response(200)
+    |> get_in(["data", "user", "id"])
+  end
+
+  defp forwarding_transport(test_pid, tag) do
+    spawn(fn ->
+      forward_messages(test_pid, tag)
+    end)
+  end
+
+  defp forward_messages(test_pid, tag) do
+    receive do
+      payload ->
+        send(test_pid, {tag, payload})
+        forward_messages(test_pid, tag)
+    end
   end
 
   defp unsupported_media_type?(response) do

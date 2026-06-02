@@ -8,6 +8,8 @@ defmodule Todex.SchemaTest do
   alias Todex.Notes.Note
   alias Todex.Notes.NoteFolder
   alias Todex.Onboarding
+  alias Todex.Sharing.ListShare
+  alias Todex.Sharing.NoteShare
   alias Todex.Todos
   alias Todex.Todos.List
   alias Todex.Todos.Task
@@ -87,6 +89,143 @@ defmodule Todex.SchemaTest do
              goal_id: ["can't be blank"],
              task_id: ["can't be blank"]
            } = errors_on(changeset)
+  end
+
+  test "list share changeset requires owner_id, recipient_id, list_id, and role" do
+    changeset = ListShare.changeset(%ListShare{}, %{})
+
+    assert %{
+             owner_id: ["can't be blank"],
+             recipient_id: ["can't be blank"],
+             list_id: ["can't be blank"],
+             role: ["can't be blank"]
+           } = errors_on(changeset)
+  end
+
+  test "note share changeset requires owner_id, recipient_id, note_id, and role" do
+    changeset = NoteShare.changeset(%NoteShare{}, %{})
+
+    assert %{
+             owner_id: ["can't be blank"],
+             recipient_id: ["can't be blank"],
+             note_id: ["can't be blank"],
+             role: ["can't be blank"]
+           } = errors_on(changeset)
+  end
+
+  test "share changesets accept only viewer and editor roles" do
+    valid_attrs = %{
+      owner_id: Ecto.UUID.generate(),
+      recipient_id: Ecto.UUID.generate(),
+      list_id: Ecto.UUID.generate(),
+      role: "admin"
+    }
+
+    assert %{role: ["is invalid"]} = errors_on(ListShare.changeset(%ListShare{}, valid_attrs))
+
+    note_attrs = valid_attrs |> Map.delete(:list_id) |> Map.put(:note_id, Ecto.UUID.generate())
+    assert %{role: ["is invalid"]} = errors_on(NoteShare.changeset(%NoteShare{}, note_attrs))
+
+    assert ListShare.changeset(%ListShare{}, %{valid_attrs | role: "viewer"}).valid?
+    assert ListShare.changeset(%ListShare{}, %{valid_attrs | role: "editor"}).valid?
+    assert NoteShare.changeset(%NoteShare{}, %{note_attrs | role: "viewer"}).valid?
+    assert NoteShare.changeset(%NoteShare{}, %{note_attrs | role: "editor"}).valid?
+  end
+
+  test "share changesets reject sharing with self" do
+    user_id = Ecto.UUID.generate()
+
+    assert %{recipient_id: ["cannot share with self"]} =
+             errors_on(
+               ListShare.changeset(%ListShare{}, %{
+                 owner_id: user_id,
+                 recipient_id: user_id,
+                 list_id: Ecto.UUID.generate(),
+                 role: "viewer"
+               })
+             )
+
+    assert %{recipient_id: ["cannot share with self"]} =
+             errors_on(
+               NoteShare.changeset(%NoteShare{}, %{
+                 owner_id: user_id,
+                 recipient_id: user_id,
+                 note_id: Ecto.UUID.generate(),
+                 role: "viewer"
+               })
+             )
+  end
+
+  test "duplicate list shares are rejected per list and recipient" do
+    owner = register_schema_user("list-share-owner")
+    recipient = register_schema_user("list-share-recipient")
+    [list | _] = Todos.list_lists(owner)
+
+    attrs = %{
+      owner_id: owner.id,
+      recipient_id: recipient.id,
+      list_id: list.id,
+      role: "viewer"
+    }
+
+    assert {:ok, _share} = %ListShare{} |> ListShare.changeset(attrs) |> Repo.insert()
+    assert {:error, changeset} = %ListShare{} |> ListShare.changeset(attrs) |> Repo.insert()
+    assert %{recipient_id: ["has already been taken"]} = errors_on(changeset)
+  end
+
+  test "list shares require the owner to own the shared list" do
+    actual_owner = register_schema_user("list-share-actual-owner")
+    wrong_owner = register_schema_user("list-share-wrong-owner")
+    recipient = register_schema_user("list-share-owner-match-recipient")
+    [list | _] = Todos.list_lists(actual_owner)
+
+    attrs = %{
+      owner_id: wrong_owner.id,
+      recipient_id: recipient.id,
+      list_id: list.id,
+      role: "viewer"
+    }
+
+    assert {:error, changeset} = %ListShare{} |> ListShare.changeset(attrs) |> Repo.insert()
+    assert %{list_id: ["does not exist"]} = errors_on(changeset)
+  end
+
+  test "duplicate note shares are rejected per note and recipient" do
+    owner = register_schema_user("note-share-owner")
+    recipient = register_schema_user("note-share-recipient")
+    [folder | _] = Notes.list_folders(owner)
+    assert {:ok, note} = Notes.create_note(owner, %{folder_id: folder.id, title: "Shared note"})
+
+    attrs = %{
+      owner_id: owner.id,
+      recipient_id: recipient.id,
+      note_id: note.id,
+      role: "viewer"
+    }
+
+    assert {:ok, _share} = %NoteShare{} |> NoteShare.changeset(attrs) |> Repo.insert()
+    assert {:error, changeset} = %NoteShare{} |> NoteShare.changeset(attrs) |> Repo.insert()
+    assert %{recipient_id: ["has already been taken"]} = errors_on(changeset)
+  end
+
+  test "note shares require the owner to own the shared note" do
+    actual_owner = register_schema_user("note-share-actual-owner")
+    wrong_owner = register_schema_user("note-share-wrong-owner")
+    recipient = register_schema_user("note-share-owner-match-recipient")
+    [folder | _] = Notes.list_folders(actual_owner)
+
+    assert {:ok, note} =
+             Notes.create_note(actual_owner, %{folder_id: folder.id, title: "Owned note"})
+
+    attrs = %{
+      owner_id: wrong_owner.id,
+      recipient_id: recipient.id,
+      note_id: note.id,
+      role: "viewer"
+    }
+
+    assert {:error, changeset} = %NoteShare{} |> NoteShare.changeset(attrs) |> Repo.insert()
+    assert %{note_id: ["does not exist"]} = errors_on(changeset)
   end
 
   # ---------------------------------------------------------------------------
@@ -242,5 +381,14 @@ defmodule Todex.SchemaTest do
              Notes.create_folder(user, %{name: "Duplicate Folder", position: 11})
 
     assert %{name: ["has already been taken"]} = errors_on(changeset)
+  end
+
+  defp register_schema_user(prefix) do
+    email = "#{prefix}-#{System.unique_integer([:positive])}@example.com"
+
+    assert {:ok, %{user: user}} =
+             Onboarding.register_user(%{email: email, password: "super-secret-password"})
+
+    user
   end
 end

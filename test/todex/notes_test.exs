@@ -3,6 +3,7 @@ defmodule Todex.NotesTest do
 
   alias Todex.Onboarding
   alias Todex.Notes
+  alias Todex.Sharing
 
   defp user_fixture(email) do
     assert {:ok, %{user: user}} =
@@ -21,6 +22,16 @@ defmodule Todex.NotesTest do
     attrs = Map.merge(%{title: "Note", body: "Body", folder_id: folder.id}, attrs)
     assert {:ok, note} = Notes.create_note(user, attrs)
     note
+  end
+
+  defp share_note(owner, recipient, note, role) do
+    assert {:ok, share} =
+             Sharing.create_note_share(owner, note.id, %{
+               recipient_email: recipient.email,
+               role: Atom.to_string(role)
+             })
+
+    share
   end
 
   test "folder CRUD is scoped to the owning user and rejects active notes on delete" do
@@ -101,5 +112,51 @@ defmodule Todex.NotesTest do
     assert {:ok, permanently_deleted} = Notes.permanently_delete_note(user, normal.id)
     assert permanently_deleted.id == normal.id
     assert nil == Notes.get_note(user, normal.id)
+  end
+
+  test "shared-note viewers can read notes and editors can update content only" do
+    owner = user_fixture("shared-note-owner@example.com")
+    viewer = user_fixture("shared-note-viewer@example.com")
+    editor = user_fixture("shared-note-editor@example.com")
+    other_folder = folder_fixture(owner, %{name: "Other shared notes"})
+    folder = folder_fixture(owner, %{name: "Shared notes"})
+    note = note_fixture(owner, folder, %{title: "Visible note"})
+    share_note(owner, viewer, note, :viewer)
+    share_note(owner, editor, note, :editor)
+
+    assert %{id: viewer_note_id} = Notes.get_note(viewer, note.id)
+    assert viewer_note_id == note.id
+    assert %{id: editor_note_id} = Notes.get_note(editor, note.id)
+    assert editor_note_id == note.id
+
+    assert {:error, :forbidden} = Notes.update_note(viewer, note.id, %{title: "Nope"})
+
+    assert {:ok, updated_note} =
+             Notes.update_note(editor, note.id, %{
+               title: "Edited title",
+               body: "Edited body",
+               folder_id: other_folder.id,
+               pinned: true,
+               position: 99
+             })
+
+    assert updated_note.title == "Edited title"
+    assert updated_note.body == "Edited body"
+    assert updated_note.folder_id == folder.id
+    refute updated_note.pinned
+    assert updated_note.position == note.position
+
+    assert {:error, :forbidden} = Notes.soft_delete_note(viewer, note.id)
+    assert {:error, :forbidden} = Notes.soft_delete_note(editor, note.id)
+    assert {:error, :forbidden} = Notes.restore_note(editor, note.id)
+    assert {:error, :forbidden} = Notes.permanently_delete_note(editor, note.id)
+    assert {:error, :forbidden} = Notes.pin_note(editor, note.id)
+    assert {:error, :forbidden} = Notes.unpin_note(editor, note.id)
+
+    assert {:error, :forbidden} =
+             Notes.update_note(editor, note.id, %{folder_id: other_folder.id})
+
+    assert nil == Notes.get_folder(viewer, folder.id)
+    assert [] == Notes.list_notes(viewer)
   end
 end

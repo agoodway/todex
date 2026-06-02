@@ -31,6 +31,11 @@ defmodule TodexWeb.OpenApiTest do
     assert get_in(response, ["components", "schemas", "NoteFolder", "properties", "name"])
     assert get_in(response, ["components", "schemas", "Goal", "properties", "title"])
     assert get_in(response, ["components", "schemas", "GoalRequest", "properties", "reason"])
+    assert get_in(response, ["components", "schemas", "Share", "properties", "recipient"])
+    assert get_in(response, ["components", "schemas", "SharedList", "properties", "share"])
+    assert get_in(response, ["components", "schemas", "SharedNote", "properties", "note"])
+    assert get_in(response, ["components", "schemas", "Pagination", "properties", "page_size"])
+    assert get_in(response, ["components", "schemas", "ShareCreateRequest", "properties", "role"])
 
     assert get_in(response, [
              "components",
@@ -95,6 +100,15 @@ defmodule TodexWeb.OpenApiTest do
     assert get_in(paths, ["/api/lists", "post", "operationId"]) == "createList"
     assert get_in(paths, ["/api/lists/{id}", "patch", "operationId"]) == "updateList"
     assert get_in(paths, ["/api/lists/{id}", "delete", "operationId"]) == "deleteList"
+    assert get_in(paths, ["/api/lists/{id}/shares", "get", "operationId"]) == "listListShares"
+    assert get_in(paths, ["/api/lists/{id}/shares", "post", "operationId"]) == "createListShare"
+
+    assert get_in(paths, ["/api/lists/{id}/shares/{share_id}", "patch", "operationId"]) ==
+             "updateListShare"
+
+    assert get_in(paths, ["/api/lists/{id}/shares/{share_id}", "delete", "operationId"]) ==
+             "deleteListShare"
+
     assert get_in(paths, ["/api/tasks", "get", "operationId"]) == "listTasks"
     assert get_in(paths, ["/api/tasks", "post", "operationId"]) == "createTask"
     assert get_in(paths, ["/api/tasks/{id}", "get", "operationId"]) == "getTask"
@@ -118,6 +132,17 @@ defmodule TodexWeb.OpenApiTest do
     assert get_in(paths, ["/api/notes/{id}/pin", "post", "operationId"]) == "pinNote"
     assert get_in(paths, ["/api/notes/{id}/unpin", "post", "operationId"]) == "unpinNote"
     assert get_in(paths, ["/api/notes/{id}/restore", "post", "operationId"]) == "restoreNote"
+    assert get_in(paths, ["/api/notes/{id}/shares", "get", "operationId"]) == "listNoteShares"
+    assert get_in(paths, ["/api/notes/{id}/shares", "post", "operationId"]) == "createNoteShare"
+
+    assert get_in(paths, ["/api/notes/{id}/shares/{share_id}", "patch", "operationId"]) ==
+             "updateNoteShare"
+
+    assert get_in(paths, ["/api/notes/{id}/shares/{share_id}", "delete", "operationId"]) ==
+             "deleteNoteShare"
+
+    assert get_in(paths, ["/api/shared/lists", "get", "operationId"]) == "listSharedLists"
+    assert get_in(paths, ["/api/shared/notes", "get", "operationId"]) == "listSharedNotes"
 
     assert get_in(paths, ["/api/notes/{id}/permanent", "delete", "operationId"]) ==
              "permanentlyDeleteNote"
@@ -202,6 +227,27 @@ defmodule TodexWeb.OpenApiTest do
              "422"
            ]
 
+    assert response_statuses(paths, "/api/lists/{id}/shares", "post") == [
+             "202",
+             "400",
+             "401",
+             "403",
+             "404",
+             "409",
+             "415",
+             "422"
+           ]
+
+    assert response_statuses(paths, "/api/notes/{id}/shares/{share_id}", "delete") == [
+             "200",
+             "400",
+             "401",
+             "403",
+             "404",
+             "415",
+             "422"
+           ]
+
     assert get_in(paths, [
              "/api/auth/login",
              "post",
@@ -232,6 +278,22 @@ defmodule TodexWeb.OpenApiTest do
       |> Enum.sort()
 
     assert note_query_params == ["deleted", "folder_id", "pinned", "q"]
+
+    shared_list_query_params =
+      paths
+      |> get_in(["/api/shared/lists", "get", "parameters"])
+      |> Enum.map(& &1["name"])
+      |> Enum.sort()
+
+    assert shared_list_query_params == ["page", "page_size"]
+
+    shared_note_query_params =
+      paths
+      |> get_in(["/api/shared/notes", "get", "parameters"])
+      |> Enum.map(& &1["name"])
+      |> Enum.sort()
+
+    assert shared_note_query_params == ["page", "page_size"]
   end
 
   defp response_statuses(paths, path, method) do
