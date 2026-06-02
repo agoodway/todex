@@ -4,6 +4,7 @@ defmodule Todex.Notes do
   alias Todex.Notes.Note
   alias Todex.Notes.NoteFolder
   alias Todex.Repo
+  alias Todex.Sharing.NoteShare
 
   @default_folder %{name: "Notes", position: 0, is_default: true}
 
@@ -27,7 +28,7 @@ defmodule Todex.Notes do
   end
 
   def get_folder(user, id) do
-    case cast_uuid(id) do
+    case Ecto.UUID.cast(id) do
       {:ok, id} ->
         NoteFolder
         |> where([folder], folder.user_id == ^user.id and folder.id == ^id)
@@ -86,14 +87,9 @@ defmodule Todex.Notes do
   end
 
   def get_note(user, id) do
-    case cast_uuid(id) do
-      {:ok, id} ->
-        Note
-        |> where([note], note.user_id == ^user.id and note.id == ^id)
-        |> Repo.one()
-
-      :error ->
-        nil
+    case fetch_note_access(user, id) do
+      {:ok, note, _permission} -> note
+      {:error, :not_found} -> nil
     end
   end
 
@@ -111,19 +107,24 @@ defmodule Todex.Notes do
   end
 
   def update_note(user, id, attrs) do
-    with %Note{} = note <- get_note(user, id),
-         {:ok, attrs} <- validate_folder_owner(user, attrs) do
-      note
-      |> Note.changeset(known_note_attrs(attrs))
-      |> Repo.update()
+    with {:ok, note, permission} <- fetch_note_access(user, id),
+         :ok <- require_note_editor(permission),
+         {:ok, attrs} <- editable_note_attrs(user, permission, attrs) do
+      if map_size(attrs) == 0 do
+        {:error, :forbidden}
+      else
+        note
+        |> Note.changeset(attrs)
+        |> Repo.update()
+      end
     else
-      nil -> {:error, :not_found}
+      {:error, :not_found} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def pin_note(user, id), do: update_note(user, id, %{pinned: true})
-  def unpin_note(user, id), do: update_note(user, id, %{pinned: false})
+  def pin_note(user, id), do: update_owner_note(user, id, %{pinned: true})
+  def unpin_note(user, id), do: update_owner_note(user, id, %{pinned: false})
 
   def soft_delete_note(user, id) do
     set_deleted_at(user, id, DateTime.utc_now() |> DateTime.truncate(:second))
@@ -132,11 +133,14 @@ defmodule Todex.Notes do
   def restore_note(user, id), do: set_deleted_at(user, id, nil)
 
   defp set_deleted_at(user, id, value) do
-    case get_note(user, id) do
-      nil ->
+    case fetch_note_access(user, id) do
+      {:error, :not_found} ->
         {:error, :not_found}
 
-      note ->
+      {:ok, _note, role} when role in [:viewer, :editor] ->
+        {:error, :forbidden}
+
+      {:ok, note, :owner} ->
         note
         |> Note.changeset(%{deleted_at: value})
         |> Repo.update()
@@ -144,9 +148,25 @@ defmodule Todex.Notes do
   end
 
   def permanently_delete_note(user, id) do
-    case get_note(user, id) do
-      nil -> {:error, :not_found}
-      note -> Repo.delete(note)
+    case fetch_note_access(user, id) do
+      {:error, :not_found} -> {:error, :not_found}
+      {:ok, _note, role} when role in [:viewer, :editor] -> {:error, :forbidden}
+      {:ok, note, :owner} -> Repo.delete(note)
+    end
+  end
+
+  defp update_owner_note(user, id, attrs) do
+    case fetch_note_access(user, id) do
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:ok, _note, role} when role in [:viewer, :editor] ->
+        {:error, :forbidden}
+
+      {:ok, note, :owner} ->
+        note
+        |> Note.changeset(known_note_attrs(attrs))
+        |> Repo.update()
     end
   end
 
@@ -178,6 +198,44 @@ defmodule Todex.Notes do
     end
   end
 
+  defp fetch_note_access(user, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         {%Note{} = note, role} <- note_access_query(user, id) |> Repo.one() do
+      {:ok, note, note_permission(user, note, role)}
+    else
+      nil -> {:error, :not_found}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp note_access_query(user, id) do
+    Note
+    |> join(:left, [note], share in NoteShare,
+      on: share.note_id == note.id and share.recipient_id == ^user.id
+    )
+    |> where(
+      [note, share],
+      note.id == ^id and
+        (note.user_id == ^user.id or
+           (not is_nil(share.id) and is_nil(note.deleted_at)))
+    )
+    |> select([note, share], {note, share.role})
+  end
+
+  defp note_permission(user, note, _role) when note.user_id == user.id, do: :owner
+  defp note_permission(_user, _note, role), do: role
+
+  defp require_note_editor(permission) when permission in [:owner, :editor], do: :ok
+  defp require_note_editor(:viewer), do: {:error, :forbidden}
+
+  defp editable_note_attrs(user, :owner, attrs) do
+    with {:ok, attrs} <- validate_folder_owner(user, attrs) do
+      {:ok, known_note_attrs(attrs)}
+    end
+  end
+
+  defp editable_note_attrs(_user, :editor, attrs), do: {:ok, known_attrs(attrs, [:title, :body])}
+
   defp filter_deleted(query, value) when value in [true, "true"] do
     where(query, [note], not is_nil(note.deleted_at))
   end
@@ -191,7 +249,7 @@ defmodule Todex.Notes do
   defp filter_folder_id(query, nil), do: query
 
   defp filter_folder_id(query, folder_id) do
-    case cast_uuid(folder_id) do
+    case Ecto.UUID.cast(folder_id) do
       {:ok, folder_id} -> where(query, [note], note.folder_id == ^folder_id)
       :error -> none(query)
     end
@@ -240,13 +298,6 @@ defmodule Todex.Notes do
   end
 
   defp param(_attrs, _key), do: nil
-
-  defp cast_uuid(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, id} -> {:ok, id}
-      :error -> :error
-    end
-  end
 
   defp none(query), do: where(query, false)
 
