@@ -29,6 +29,11 @@ defmodule TodexWeb.ApiSpec do
           "Goal" => Schemas.Goal.schema(),
           "NoteFolder" => Schemas.NoteFolder.schema(),
           "Note" => Schemas.Note.schema(),
+          "Share" => Schemas.Share.schema(),
+          "SharedMetadata" => Schemas.SharedMetadata.schema(),
+          "SharedList" => Schemas.SharedList.schema(),
+          "SharedNote" => Schemas.SharedNote.schema(),
+          "Pagination" => Schemas.Pagination.schema(),
           "AuthResponse" => Schemas.AuthResponse.schema(),
           "ErrorResponse" => Schemas.ErrorResponse.schema(),
           "RegisterRequest" => Schemas.RegisterRequest.schema(),
@@ -38,7 +43,9 @@ defmodule TodexWeb.ApiSpec do
           "GoalRequest" => Schemas.GoalRequest.schema(),
           "GoalLinkTaskRequest" => Schemas.GoalLinkTaskRequest.schema(),
           "NoteFolderRequest" => Schemas.NoteFolderRequest.schema(),
-          "NoteRequest" => Schemas.NoteRequest.schema()
+          "NoteRequest" => Schemas.NoteRequest.schema(),
+          "ShareCreateRequest" => Schemas.ShareCreateRequest.schema(),
+          "ShareUpdateRequest" => Schemas.ShareUpdateRequest.schema()
         },
         securitySchemes: %{
           "bearerAuth" => %SecurityScheme{
@@ -150,6 +157,39 @@ defmodule TodexWeb.ApiSpec do
             ok(data_object(%{list: Schemas.List}))
           )
       },
+      "/api/lists/{id}/shares" => %PathItem{
+        parameters: [id_parameter()],
+        get:
+          operation(
+            "listListShares",
+            "List list shares",
+            "Return shares for an owned list",
+            nil,
+            200,
+            ok(data_object(%{shares: array(Schemas.Share)}))
+          ),
+        post:
+          operation(
+            "createListShare",
+            "Create list share",
+            "Share an owned list by recipient email. Returns a neutral 202 acknowledgment even when the email is not registered.",
+            request(Schemas.ShareCreateRequest),
+            202,
+            accepted(data_object(%{message: %Schema{type: :string}})),
+            true,
+            [],
+            sharing_conflict_responses()
+          )
+      },
+      "/api/lists/{id}/shares/{share_id}" =>
+        share_management_path(
+          "updateListShare",
+          "Update list share",
+          "Update a list share role",
+          "deleteListShare",
+          "Delete list share",
+          "Revoke a list share"
+        ),
       "/api/tasks" => %PathItem{
         get:
           operation(
@@ -417,6 +457,65 @@ defmodule TodexWeb.ApiSpec do
             200,
             ok(data_object(%{note: Schemas.Note}))
           )
+      },
+      "/api/notes/{id}/shares" => %PathItem{
+        parameters: [id_parameter()],
+        get:
+          operation(
+            "listNoteShares",
+            "List note shares",
+            "Return shares for an owned note",
+            nil,
+            200,
+            ok(data_object(%{shares: array(Schemas.Share)}))
+          ),
+        post:
+          operation(
+            "createNoteShare",
+            "Create note share",
+            "Share an owned note by recipient email. Returns a neutral 202 acknowledgment even when the email is not registered.",
+            request(Schemas.ShareCreateRequest),
+            202,
+            accepted(data_object(%{message: %Schema{type: :string}})),
+            true,
+            [],
+            sharing_conflict_responses()
+          )
+      },
+      "/api/notes/{id}/shares/{share_id}" =>
+        share_management_path(
+          "updateNoteShare",
+          "Update note share",
+          "Update a note share role",
+          "deleteNoteShare",
+          "Delete note share",
+          "Revoke a note share"
+        ),
+      "/api/shared/lists" => %PathItem{
+        get:
+          operation(
+            "listSharedLists",
+            "List shared lists",
+            "Return lists shared with the authenticated user",
+            nil,
+            200,
+            ok(data_object(%{lists: array(Schemas.SharedList), pagination: Schemas.Pagination})),
+            true,
+            pagination_parameters()
+          )
+      },
+      "/api/shared/notes" => %PathItem{
+        get:
+          operation(
+            "listSharedNotes",
+            "List shared notes",
+            "Return notes shared with the authenticated user",
+            nil,
+            200,
+            ok(data_object(%{notes: array(Schemas.SharedNote), pagination: Schemas.Pagination})),
+            true,
+            pagination_parameters()
+          )
       }
     }
   end
@@ -436,6 +535,43 @@ defmodule TodexWeb.ApiSpec do
     }
   end
 
+  defp share_management_path(
+         update_operation_id,
+         update_summary,
+         update_description,
+         delete_operation_id,
+         delete_summary,
+         delete_description
+       ) do
+    %PathItem{
+      parameters: [id_parameter(), share_id_parameter()],
+      patch:
+        operation(
+          update_operation_id,
+          update_summary,
+          update_description,
+          request(Schemas.ShareUpdateRequest),
+          200,
+          ok(data_object(%{share: Schemas.Share})),
+          true,
+          [],
+          forbidden_response()
+        ),
+      delete:
+        operation(
+          delete_operation_id,
+          delete_summary,
+          delete_description,
+          nil,
+          200,
+          ok(data_object(%{share: Schemas.Share})),
+          true,
+          [],
+          forbidden_response()
+        )
+    }
+  end
+
   defp operation(
          operation_id,
          summary,
@@ -444,7 +580,8 @@ defmodule TodexWeb.ApiSpec do
          success_status,
          success_response,
          secured \\ true,
-         parameters \\ []
+         parameters \\ [],
+         extra_responses \\ %{}
        ) do
     %Operation{
       tags: ["REST API"],
@@ -453,9 +590,17 @@ defmodule TodexWeb.ApiSpec do
       description: description,
       parameters: parameters,
       requestBody: request_body,
-      responses: responses(success_status, success_response),
+      responses: responses(success_status, success_response) |> Map.merge(extra_responses),
       security: if(secured, do: [%{"bearerAuth" => []}], else: [])
     }
+  end
+
+  defp sharing_conflict_responses do
+    Map.merge(forbidden_response(), %{409 => error_response("Conflict")})
+  end
+
+  defp forbidden_response do
+    %{403 => error_response("Forbidden")}
   end
 
   defp responses(success_status, success_response) do
@@ -470,6 +615,7 @@ defmodule TodexWeb.ApiSpec do
   end
 
   defp ok(schema), do: response("OK", schema)
+  defp accepted(schema), do: response("Accepted", schema)
   defp created(schema), do: response("Created", schema)
 
   defp response(description, schema) do
@@ -518,6 +664,26 @@ defmodule TodexWeb.ApiSpec do
       required: true,
       schema: %Schema{type: :string, format: :uuid}
     }
+  end
+
+  defp share_id_parameter do
+    %Parameter{
+      name: "share_id",
+      in: :path,
+      required: true,
+      schema: %Schema{type: :string, format: :uuid}
+    }
+  end
+
+  defp pagination_parameters do
+    [
+      %Parameter{name: "page", in: :query, schema: %Schema{type: :integer, minimum: 1}},
+      %Parameter{
+        name: "page_size",
+        in: :query,
+        schema: %Schema{type: :integer, minimum: 1, maximum: 100}
+      }
+    ]
   end
 
   defp task_query_parameters do

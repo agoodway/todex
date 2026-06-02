@@ -131,6 +131,86 @@ defmodule TodexWeb.Schemas do
     })
   end
 
+  defmodule Share do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "Share",
+      type: :object,
+      required: [:id, :owner_id, :recipient, :role, :inserted_at, :updated_at],
+      properties: %{
+        id: %Schema{type: :string, format: :uuid},
+        list_id: %Schema{type: :string, format: :uuid, nullable: true},
+        note_id: %Schema{type: :string, format: :uuid, nullable: true},
+        owner_id: %Schema{type: :string, format: :uuid},
+        recipient: User,
+        role: %Schema{type: :string, enum: ["viewer", "editor"]},
+        inserted_at: %Schema{type: :string, format: :"date-time"},
+        updated_at: %Schema{type: :string, format: :"date-time"}
+      }
+    })
+  end
+
+  defmodule SharedMetadata do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "SharedMetadata",
+      type: :object,
+      required: [:id, :role, :owner, :inserted_at, :updated_at],
+      properties: %{
+        id: %Schema{type: :string, format: :uuid},
+        role: %Schema{type: :string, enum: ["viewer", "editor"]},
+        owner: User,
+        inserted_at: %Schema{type: :string, format: :"date-time"},
+        updated_at: %Schema{type: :string, format: :"date-time"}
+      }
+    })
+  end
+
+  defmodule SharedList do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "SharedList",
+      type: :object,
+      required: [:list, :share],
+      properties: %{
+        list: List,
+        share: SharedMetadata
+      }
+    })
+  end
+
+  defmodule SharedNote do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "SharedNote",
+      type: :object,
+      required: [:note, :share],
+      properties: %{
+        note: Note,
+        share: SharedMetadata
+      }
+    })
+  end
+
+  defmodule Pagination do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "Pagination",
+      type: :object,
+      required: [:page, :page_size, :total],
+      properties: %{
+        page: %Schema{type: :integer, minimum: 1},
+        page_size: %Schema{type: :integer, minimum: 1, maximum: 100},
+        total: %Schema{type: :integer, minimum: 0}
+      }
+    })
+  end
+
   defmodule ErrorResponse do
     require OpenApiSpex
 
@@ -263,6 +343,33 @@ defmodule TodexWeb.Schemas do
         body: %Schema{type: :string, nullable: true},
         pinned: %Schema{type: :boolean},
         position: %Schema{type: :integer}
+      }
+    })
+  end
+
+  defmodule ShareCreateRequest do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "ShareCreateRequest",
+      type: :object,
+      required: [:recipient_email, :role],
+      properties: %{
+        recipient_email: %Schema{type: :string, format: :email},
+        role: %Schema{type: :string, enum: ["viewer", "editor"]}
+      }
+    })
+  end
+
+  defmodule ShareUpdateRequest do
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "ShareUpdateRequest",
+      type: :object,
+      required: [:role],
+      properties: %{
+        role: %Schema{type: :string, enum: ["viewer", "editor"]}
       }
     })
   end

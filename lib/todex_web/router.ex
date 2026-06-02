@@ -6,12 +6,17 @@ defmodule TodexWeb.ProtectedRouter do
   alias Todex.Accounts
   alias Todex.Goals
   alias Todex.Notes
+  alias Todex.Sharing
   alias Todex.Todos
   alias TodexWeb.Errors
   alias TodexWeb.Json
 
   defp task_result({:ok, task, _affected_goals}), do: {:ok, task}
   defp task_result(result), do: result
+
+  defp neutral_share_ack(_share) do
+    %{message: "If that user exists, the resource has been shared with them."}
+  end
 
   plug(TodexWeb.SafeParsers)
   plug(TodexWeb.AuthPlug)
@@ -67,6 +72,64 @@ defmodule TodexWeb.ProtectedRouter do
       200,
       fn list ->
         %{list: Json.list(list)}
+      end
+    )
+  end)
+
+  post("/lists/:id/shares", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Sharing.create_list_share(conn.assigns.current_user, conn.params["id"], conn.body_params),
+        202,
+        fn share ->
+          broadcast_list_shared(share)
+          neutral_share_ack(share)
+        end
+      )
+    end)
+  end)
+
+  get("/lists/:id/shares", fn conn ->
+    conn
+    |> Errors.render_result(
+      Sharing.list_list_shares(conn.assigns.current_user, conn.params["id"]),
+      200,
+      fn shares -> %{shares: Enum.map(shares, &Json.share/1)} end
+    )
+  end)
+
+  patch("/lists/:id/shares/:share_id", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Sharing.update_list_share(
+          conn.assigns.current_user,
+          conn.params["id"],
+          conn.params["share_id"],
+          conn.body_params
+        ),
+        200,
+        fn share ->
+          broadcast_list_shared(share)
+          %{share: Json.share(share)}
+        end
+      )
+    end)
+  end)
+
+  delete("/lists/:id/shares/:share_id", fn conn ->
+    conn
+    |> Errors.render_result(
+      Sharing.delete_list_share(
+        conn.assigns.current_user,
+        conn.params["id"],
+        conn.params["share_id"]
+      ),
+      200,
+      fn share ->
+        broadcast_list_unshared(share)
+        %{share: Json.share(share)}
       end
     )
   end)
@@ -340,7 +403,148 @@ defmodule TodexWeb.ProtectedRouter do
     )
   end)
 
+  post("/notes/:id/shares", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Sharing.create_note_share(conn.assigns.current_user, conn.params["id"], conn.body_params),
+        202,
+        fn share ->
+          broadcast_note_shared(share)
+          neutral_share_ack(share)
+        end
+      )
+    end)
+  end)
+
+  get("/notes/:id/shares", fn conn ->
+    conn
+    |> Errors.render_result(
+      Sharing.list_note_shares(conn.assigns.current_user, conn.params["id"]),
+      200,
+      fn shares -> %{shares: Enum.map(shares, &Json.share/1)} end
+    )
+  end)
+
+  patch("/notes/:id/shares/:share_id", fn conn ->
+    Errors.require_json_body(conn, fn conn ->
+      conn
+      |> Errors.render_result(
+        Sharing.update_note_share(
+          conn.assigns.current_user,
+          conn.params["id"],
+          conn.params["share_id"],
+          conn.body_params
+        ),
+        200,
+        fn share ->
+          broadcast_note_shared(share)
+          %{share: Json.share(share)}
+        end
+      )
+    end)
+  end)
+
+  delete("/notes/:id/shares/:share_id", fn conn ->
+    conn
+    |> Errors.render_result(
+      Sharing.delete_note_share(
+        conn.assigns.current_user,
+        conn.params["id"],
+        conn.params["share_id"]
+      ),
+      200,
+      fn share ->
+        broadcast_note_unshared(share)
+        %{share: Json.share(share)}
+      end
+    )
+  end)
+
+  get("/shared/lists", fn conn ->
+    {page, page_size} = page_params(conn.params)
+
+    conn
+    |> Errors.render_result(
+      Sharing.list_shared_lists(conn.assigns.current_user, page: page, page_size: page_size),
+      200,
+      fn %{items: items, total: total} ->
+        %{
+          lists: Enum.map(items, &Json.shared_list/1),
+          pagination: %{page: page, page_size: page_size, total: total}
+        }
+      end
+    )
+  end)
+
+  get("/shared/notes", fn conn ->
+    {page, page_size} = page_params(conn.params)
+
+    conn
+    |> Errors.render_result(
+      Sharing.list_shared_notes(conn.assigns.current_user, page: page, page_size: page_size),
+      200,
+      fn %{items: items, total: total} ->
+        %{
+          notes: Enum.map(items, &Json.shared_note/1),
+          pagination: %{page: page, page_size: page_size, total: total}
+        }
+      end
+    )
+  end)
+
   unmatched(fn conn -> Errors.send_error(conn, 404, "not_found", "Not found") end)
+
+  defp page_params(params) do
+    page = positive_int(Map.get(params, "page"), 1)
+    page_size = params |> Map.get("page_size") |> positive_int(20) |> min(100)
+    {page, page_size}
+  end
+
+  defp positive_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      _parsed -> default
+    end
+  end
+
+  defp positive_int(_value, default), do: default
+
+  defp broadcast_list_shared(nil), do: :ok
+
+  defp broadcast_list_shared(share) do
+    share = Todex.Repo.preload(share, [:owner, :recipient, :list])
+
+    Todex.Realtime.broadcast(share.recipient_id, %{
+      type: "list:shared",
+      payload: Json.shared_list(%{share: share, list: share.list})
+    })
+  end
+
+  defp broadcast_note_shared(nil), do: :ok
+
+  defp broadcast_note_shared(share) do
+    share = Todex.Repo.preload(share, [:owner, :recipient, :note])
+
+    Todex.Realtime.broadcast(share.recipient_id, %{
+      type: "note:shared",
+      payload: Json.shared_note(%{share: share, note: share.note})
+    })
+  end
+
+  defp broadcast_list_unshared(share) do
+    Todex.Realtime.broadcast(share.recipient_id, %{
+      type: "list:unshared",
+      payload: %{list_id: share.list_id, share_id: share.id}
+    })
+  end
+
+  defp broadcast_note_unshared(share) do
+    Todex.Realtime.broadcast(share.recipient_id, %{
+      type: "note:unshared",
+      payload: %{note_id: share.note_id, share_id: share.id}
+    })
+  end
 end
 
 defmodule TodexWeb.Router do

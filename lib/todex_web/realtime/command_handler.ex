@@ -1,6 +1,7 @@
 defmodule TodexWeb.Realtime.CommandHandler do
   alias Todex.Goals
   alias Todex.Notes
+  alias Todex.Sharing
   alias Todex.Todos
   alias TodexWeb.Errors
   alias TodexWeb.Json
@@ -170,7 +171,7 @@ defmodule TodexWeb.Realtime.CommandHandler do
 
   defp result({:ok, task, affected_goals}, id, :task, event_type) do
     payload = record_payload(:task, task)
-    {:ok, ok_response(id, payload), task_broadcasts(event_type, payload, affected_goals)}
+    {:ok, ok_response(id, payload), task_broadcasts(event_type, payload, task, affected_goals)}
   end
 
   defp result({:error, reason}, id, _key, _event_type) do
@@ -183,14 +184,27 @@ defmodule TodexWeb.Realtime.CommandHandler do
   defp record_payload(:note_folder, folder), do: %{note_folder: Json.note_folder(folder)}
   defp record_payload(:note, note), do: %{note: Json.note(note)}
 
-  defp task_broadcasts(event_type, payload, affected_goals) do
+  defp task_broadcasts(event_type, payload, task, affected_goals) do
     # Task writes can affect multiple linked goals. Each goal update remains a
     # separate event to preserve the existing realtime protocol shape.
     goal_broadcasts =
       affected_goals
-      |> Enum.map(fn goal -> %{type: "goal:updated", payload: record_payload(:goal, goal)} end)
+      |> Enum.map(fn goal ->
+        %{type: "goal:updated", payload: record_payload(:goal, goal), recipients: [goal.user_id]}
+      end)
 
-    [%{type: event_type, payload: payload} | goal_broadcasts]
+    [
+      %{type: event_type, payload: payload, recipients: Sharing.list_recipient_ids(task.list_id)}
+      | goal_broadcasts
+    ]
+  end
+
+  defp broadcasts(record, :list, event_type, payload) do
+    [%{type: event_type, payload: payload, recipients: Sharing.list_recipient_ids(record.id)}]
+  end
+
+  defp broadcasts(record, :note, event_type, payload) do
+    [%{type: event_type, payload: payload, recipients: Sharing.note_recipient_ids(record.id)}]
   end
 
   defp broadcasts(_record, _key, event_type, payload), do: [%{type: event_type, payload: payload}]

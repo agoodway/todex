@@ -3,6 +3,8 @@ defmodule TodexWeb.Json do
   alias Todex.Goals.Goal
   alias Todex.Notes.Note
   alias Todex.Notes.NoteFolder
+  alias Todex.Sharing.ListShare
+  alias Todex.Sharing.NoteShare
   alias Todex.Todos.List
   alias Todex.Todos.Task
 
@@ -80,8 +82,50 @@ defmodule TodexWeb.Json do
     }
   end
 
+  def share(%ListShare{} = share) do
+    share_fields(share)
+    |> Map.put(:list_id, share.list_id)
+  end
+
+  def share(%NoteShare{} = share) do
+    share_fields(share)
+    |> Map.put(:note_id, share.note_id)
+  end
+
+  def shared_list(%{share: %ListShare{} = share, list: %List{} = list}) do
+    %{list: list(list), share: shared_metadata(share)}
+  end
+
+  def shared_note(%{share: %NoteShare{} = share, note: %Note{} = note}) do
+    %{note: note(note), share: shared_metadata(share)}
+  end
+
   defp status(nil), do: nil
   defp status(status), do: Atom.to_string(status)
+
+  defp share_fields(share) do
+    %{
+      id: share.id,
+      owner_id: share.owner_id,
+      recipient: assoc_user(share.recipient),
+      role: status(share.role),
+      inserted_at: datetime(share.inserted_at),
+      updated_at: datetime(share.updated_at)
+    }
+  end
+
+  defp shared_metadata(share) do
+    %{
+      id: share.id,
+      role: status(share.role),
+      owner: assoc_user(share.owner),
+      inserted_at: datetime(share.inserted_at),
+      updated_at: datetime(share.updated_at)
+    }
+  end
+
+  defp assoc_user(%User{} = user), do: user(user)
+  defp assoc_user(_not_loaded), do: nil
 
   defp date(nil), do: nil
   defp date(%Date{} = date), do: Date.to_iso8601(date)

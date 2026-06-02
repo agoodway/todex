@@ -96,6 +96,23 @@ defmodule TodexWeb.Errors do
     %{status: 422, code: "folder_has_notes", message: "Folder has notes", details: %{}}
   end
 
+  def error_info(:share_already_exists, _default) do
+    %{status: 409, code: "share_already_exists", message: "Share already exists", details: %{}}
+  end
+
+  def error_info(:cannot_share_with_self, _default) do
+    %{
+      status: 422,
+      code: "cannot_share_with_self",
+      message: "Cannot share with self",
+      details: %{}
+    }
+  end
+
+  def error_info(:forbidden, _default) do
+    %{status: 403, code: "forbidden", message: "Forbidden", details: %{}}
+  end
+
   def error_info(:invalid_credentials, _default) do
     %{status: 401, code: "invalid_credentials", message: "Invalid credentials", details: %{}}
   end

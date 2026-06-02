@@ -100,7 +100,12 @@ defmodule TodexWeb.WebSocketHandler do
         case TodexWeb.Realtime.CommandHandler.handle(user, envelope) do
           {:ok, response, broadcasts} ->
             Enum.each(broadcasts, fn broadcast ->
-              :ok = Todex.Realtime.broadcast(user.id, broadcast)
+              broadcast
+              |> Map.get(:recipients, [user.id])
+              |> Enum.uniq()
+              |> Enum.each(fn user_id ->
+                :ok = Todex.Realtime.broadcast(user_id, Map.delete(broadcast, :recipients))
+              end)
             end)
 
             {:reply, response}
